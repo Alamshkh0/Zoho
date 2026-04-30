@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+.tmp/
+.DS_Store
+*.xlsx
+~$*
+.venv/
+venv/
+.streamlit/secrets.toml
