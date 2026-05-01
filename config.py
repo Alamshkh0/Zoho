@@ -16,3 +16,14 @@ BRANDS = ["AWS", "Microsoft", "Red Hat"]
 ROLES = ["PAM", "BSM", "PM", "Pre-Sales", "Business", "Marketing", "Services", "Finance", "Other"]
 
 FIELD_TYPES = ["Text", "Number", "Date", "Dropdown", "Multi-select", "Yes/No"]
+
+DATA_SOURCES = [
+    "Manual",
+    "CQ",
+    "SAP",
+    "AWS ACE",
+    "Microsoft Partner Center",
+    "Salesforce",
+    "API",
+    "Other",
+]
