@@ -261,13 +261,19 @@ A polished PDF + Word + CSV per brand, plus auto-generated insights, conflicts, 
 # =====================================================================
 # Field-builder UI
 # =====================================================================
+# Defensive: fall back if a stale deployed config.py is missing DATA_SOURCES
+_DATA_SOURCES = getattr(config, "DATA_SOURCES",
+    ["Manual", "CQ", "SAP", "AWS ACE", "Microsoft Partner Center", "Salesforce", "API", "Other"])
+_FIELD_TYPES  = getattr(config, "FIELD_TYPES",
+    ["Text", "Number", "Date", "Dropdown", "Multi-select", "Yes/No"])
+
 FIELD_COLUMNS = {
     "field":               st.column_config.TextColumn("Field name", required=True),
-    "type":                st.column_config.SelectboxColumn("Type", options=config.FIELD_TYPES, required=True),
+    "type":                st.column_config.SelectboxColumn("Type", options=_FIELD_TYPES, required=True),
     "options":             st.column_config.TextColumn("Options"),
     "mandatory":           st.column_config.CheckboxColumn("Mand.?"),
     "integration_needed":  st.column_config.CheckboxColumn("🔌 Integ.?"),
-    "data_capture_source": st.column_config.SelectboxColumn("📥 Source", options=config.DATA_SOURCES),
+    "data_capture_source": st.column_config.SelectboxColumn("📥 Source", options=_DATA_SOURCES),
     "conditional_rule":    st.column_config.TextColumn("Conditional / business rule"),
 }
 
