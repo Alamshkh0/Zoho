@@ -286,30 +286,59 @@ def _ensure_new_columns(rows: list[dict]) -> list[dict]:
     return rows
 
 
+def _reset_editor_state(edit_key: str):
+    """Drop the data_editor's accumulated delta state so the next render starts fresh."""
+    if edit_key in st.session_state:
+        del st.session_state[edit_key]
+
+
+def _ensure_init(init_key: str, state_key: str):
+    """Ensure init_key (the stable base df for the editor) is in sync with the saved fields.
+
+    Resets when the contributor changes (e.g., resume of a different session).
+    """
+    cid_marker = f"_init_cid_{init_key}"
+    current_cid = st.session_state.get("contributor_id")
+    if init_key not in st.session_state or st.session_state.get(cid_marker) != current_cid:
+        saved = _ensure_new_columns(list(st.session_state[state_key].get("fields", []) or []))
+        st.session_state[init_key] = saved
+        st.session_state[cid_marker] = current_cid
+        # Force the editor to start fresh against the new base
+        _reset_editor_state(f"editor_{state_key}")
+
+
 def _field_builder(label: str, state_key: str, suggestion_pool: list[dict], help_text: str = "") -> list[dict]:
+    init_key = f"init_{state_key}"
+    edit_key = f"editor_{state_key}"
+    _ensure_init(init_key, state_key)
+
     st.markdown(f"#### {label}")
     if help_text: st.caption(help_text)
+
     cols = st.columns([1, 1, 4])
     with cols[0]:
         if suggestion_pool and st.button("➕ Load suggestions", key=f"load_{state_key}"):
-            existing = _ensure_new_columns(st.session_state[state_key].get("fields", []))
+            existing = list(st.session_state[init_key])
             existing_names = {f.get("field", "").strip().lower() for f in existing}
             for s in suggestion_pool:
                 if s["field"].strip().lower() not in existing_names:
                     existing.append(dict(s))
+            st.session_state[init_key] = existing
             st.session_state[state_key]["fields"] = existing
-            st.rerun()
+            _reset_editor_state(edit_key)
     with cols[1]:
         if st.button("🗑️ Clear all", key=f"clear_{state_key}"):
+            st.session_state[init_key] = []
             st.session_state[state_key]["fields"] = []
-            st.rerun()
+            _reset_editor_state(edit_key)
 
-    rows = _ensure_new_columns(st.session_state[state_key].get("fields", []))
+    rows = st.session_state[init_key]
     df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=list(FIELD_COLUMNS.keys()))
     edited = st.data_editor(
         df, num_rows="dynamic", use_container_width=True,
-        column_config=FIELD_COLUMNS, key=f"editor_{state_key}", hide_index=True,
+        column_config=FIELD_COLUMNS, key=edit_key, hide_index=True, height=460,
     )
+    # Mirror current editor view to state_key for autosave/reporting (do NOT mutate init_key)
     fields = edited.to_dict(orient="records")
     st.session_state[state_key]["fields"] = fields
     return fields
@@ -334,6 +363,9 @@ def render_form():
   skip what you don't, hit <b>Save & Submit</b> at the bottom. You can come back anytime with the same email.</p>
 </div>
 """, unsafe_allow_html=True)
+
+    st.info("💡 **Auto-save is ON.** Press **Enter** or **Tab** out of a cell to commit your edit. "
+            "Changes save to the database within ~1 second after you commit. You can close the tab and come back — your work is safe.")
 
     pct = _completion_pct()
     k1, k2, k3, k4 = st.columns(4)
@@ -410,30 +442,33 @@ def render_form():
         (Customer details → Project details with sales-activity progression).
         <b>Mix and match — every brand owns its own structure.</b> Don't forget integration flag + data source on every field.""")
 
+        def _seed_into(state_key: str, source: list[dict]):
+            init_key = f"init_{state_key}"
+            _ensure_init(init_key, state_key)
+            existing = list(st.session_state[init_key])
+            names = {f.get("field","").strip().lower() for f in existing}
+            for s in source:
+                if s["field"].strip().lower() not in names:
+                    existing.append(dict(s))
+            st.session_state[init_key] = existing
+            st.session_state[state_key]["fields"] = existing
+            _reset_editor_state(f"editor_{state_key}")
+
         with st.expander("**D1. Opportunity Details**", expanded=True):
             c1, c2 = st.columns(2)
             with c1:
                 if st.button("Use Red Hat starter (Opportunity)", key="seed_redhat_d1"):
-                    e = _ensure_new_columns(st.session_state.sec_sales_opp_details.get("fields", [])); names = {f.get("field","").lower() for f in e}
-                    for s in sg.REDHAT_OPPORTUNITY_DETAILS:
-                        if s["field"].lower() not in names: e.append(dict(s))
-                    st.session_state.sec_sales_opp_details["fields"] = e; st.rerun()
+                    _seed_into("sec_sales_opp_details", sg.REDHAT_OPPORTUNITY_DETAILS)
             with c2:
                 if st.button("Use AWS starter (Customer)", key="seed_aws_d1"):
-                    e = _ensure_new_columns(st.session_state.sec_sales_opp_details.get("fields", [])); names = {f.get("field","").lower() for f in e}
-                    for s in sg.AWS_CUSTOMER_DETAILS:
-                        if s["field"].lower() not in names: e.append(dict(s))
-                    st.session_state.sec_sales_opp_details["fields"] = e; st.rerun()
+                    _seed_into("sec_sales_opp_details", sg.AWS_CUSTOMER_DETAILS)
             _field_builder("Opportunity Details fields", "sec_sales_opp_details", [], "")
             st.session_state.sec_sales_opp_details["notes"] = st.text_area(
                 "Notes — D1", value=st.session_state.sec_sales_opp_details.get("notes", ""), height=70, key="notes_d1")
 
         with st.expander("**D2. Opportunity Contact Details**", expanded=False):
             if st.button("Use Red Hat starter (Contacts)", key="seed_redhat_d2"):
-                e = _ensure_new_columns(st.session_state.sec_sales_contact_details.get("fields", [])); names = {f.get("field","").lower() for f in e}
-                for s in sg.REDHAT_CONTACT_DETAILS:
-                    if s["field"].lower() not in names: e.append(dict(s))
-                st.session_state.sec_sales_contact_details["fields"] = e; st.rerun()
+                _seed_into("sec_sales_contact_details", sg.REDHAT_CONTACT_DETAILS)
             _field_builder("Contact Details fields", "sec_sales_contact_details", [], "People involved (PAM, BSM, PM, Pre-sales).")
             st.session_state.sec_sales_contact_details["notes"] = st.text_area(
                 "Notes — D2", value=st.session_state.sec_sales_contact_details.get("notes", ""), height=70, key="notes_d2")
@@ -442,16 +477,10 @@ def render_form():
             c1, c2 = st.columns(2)
             with c1:
                 if st.button("Use Red Hat starter (Deal)", key="seed_redhat_d3"):
-                    e = _ensure_new_columns(st.session_state.sec_sales_deal_details.get("fields", [])); names = {f.get("field","").lower() for f in e}
-                    for s in sg.REDHAT_DEAL_DETAILS:
-                        if s["field"].lower() not in names: e.append(dict(s))
-                    st.session_state.sec_sales_deal_details["fields"] = e; st.rerun()
+                    _seed_into("sec_sales_deal_details", sg.REDHAT_DEAL_DETAILS)
             with c2:
                 if st.button("Use AWS starter (Project)", key="seed_aws_d3"):
-                    e = _ensure_new_columns(st.session_state.sec_sales_deal_details.get("fields", [])); names = {f.get("field","").lower() for f in e}
-                    for s in sg.AWS_PROJECT_DETAILS:
-                        if s["field"].lower() not in names: e.append(dict(s))
-                    st.session_state.sec_sales_deal_details["fields"] = e; st.rerun()
+                    _seed_into("sec_sales_deal_details", sg.AWS_PROJECT_DETAILS)
             _field_builder("Deal Details fields", "sec_sales_deal_details", [], "Commercials, products, services, target close date.")
             st.session_state.sec_sales_deal_details["notes"] = st.text_area(
                 "Notes — D3", value=st.session_state.sec_sales_deal_details.get("notes", ""), height=70, key="notes_d3")
@@ -461,20 +490,33 @@ def render_form():
         _intro("""<b>Approval workflow</b> — every brand has different rules for when an opportunity needs approval
         (deal value, discount, special pricing, credit). Define stages, approvers, triggers, SLAs, and whether a stage
         can be reverted. Zoho turns this into the actual workflow rules; missing data here is the #1 cause of delayed go-lives.""")
+        appr_init = "init_sec_approvals"; appr_edit = "editor_approvals"
+        cid_marker = f"_init_cid_{appr_init}"
+        if appr_init not in st.session_state or st.session_state.get(cid_marker) != st.session_state.contributor_id:
+            st.session_state[appr_init] = list(st.session_state.sec_approvals.get("stages", []) or [])
+            st.session_state[cid_marker] = st.session_state.contributor_id
+            _reset_editor_state(appr_edit)
+
         c1, c2 = st.columns([1, 5])
         with c1:
             if st.button("➕ Load suggestions", key="load_approvals"):
-                e = st.session_state.sec_approvals.get("stages", []); names = {s.get("stage","").lower() for s in e}
+                existing = list(st.session_state[appr_init])
+                names = {s.get("stage","").strip().lower() for s in existing}
                 for s in sg.APPROVAL_STAGE_SUGGESTIONS:
-                    if s["stage"].lower() not in names: e.append(dict(s))
-                st.session_state.sec_approvals["stages"] = e; st.rerun()
+                    if s["stage"].strip().lower() not in names: existing.append(dict(s))
+                st.session_state[appr_init] = existing
+                st.session_state.sec_approvals["stages"] = existing
+                _reset_editor_state(appr_edit)
         with c2:
             if st.button("🗑️ Clear all", key="clear_approvals"):
-                st.session_state.sec_approvals["stages"] = []; st.rerun()
-        rows = st.session_state.sec_approvals.get("stages", [])
+                st.session_state[appr_init] = []
+                st.session_state.sec_approvals["stages"] = []
+                _reset_editor_state(appr_edit)
+
+        rows = st.session_state[appr_init]
         df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["stage","approver","trigger","sla_hours","can_revert"])
         edited = st.data_editor(
-            df, num_rows="dynamic", use_container_width=True, key="editor_approvals", hide_index=True,
+            df, num_rows="dynamic", use_container_width=True, key=appr_edit, hide_index=True, height=400,
             column_config={
                 "stage":      st.column_config.TextColumn("Stage", required=True),
                 "approver":   st.column_config.TextColumn("Approver / Role"),
@@ -492,20 +534,33 @@ def render_form():
         _intro("""<b>Dashboards & reports</b> — the views people actually look at every day.
         List every dashboard the team needs (Pipeline by stage, Renewal vs Net New, Forecast, Margin %, etc.),
         who watches it, and how often. <b>Without dashboards listed, Zoho cannot validate the data model supports reporting</b>.""")
+        dash_init = "init_sec_dashboards"; dash_edit = "editor_dash"
+        cid_marker_d = f"_init_cid_{dash_init}"
+        if dash_init not in st.session_state or st.session_state.get(cid_marker_d) != st.session_state.contributor_id:
+            st.session_state[dash_init] = list(st.session_state.sec_dashboards.get("dashboards", []) or [])
+            st.session_state[cid_marker_d] = st.session_state.contributor_id
+            _reset_editor_state(dash_edit)
+
         c1, c2 = st.columns([1, 5])
         with c1:
             if st.button("➕ Load suggestions", key="load_dash"):
-                e = st.session_state.sec_dashboards.get("dashboards", []); names = {d.get("dashboard","").lower() for d in e}
+                existing = list(st.session_state[dash_init])
+                names = {d.get("dashboard","").strip().lower() for d in existing}
                 for s in sg.DASHBOARD_SUGGESTIONS:
-                    if s["dashboard"].lower() not in names: e.append(dict(s))
-                st.session_state.sec_dashboards["dashboards"] = e; st.rerun()
+                    if s["dashboard"].strip().lower() not in names: existing.append(dict(s))
+                st.session_state[dash_init] = existing
+                st.session_state.sec_dashboards["dashboards"] = existing
+                _reset_editor_state(dash_edit)
         with c2:
             if st.button("🗑️ Clear all", key="clear_dash"):
-                st.session_state.sec_dashboards["dashboards"] = []; st.rerun()
-        rows = st.session_state.sec_dashboards.get("dashboards", [])
+                st.session_state[dash_init] = []
+                st.session_state.sec_dashboards["dashboards"] = []
+                _reset_editor_state(dash_edit)
+
+        rows = st.session_state[dash_init]
         df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["dashboard","audience","frequency"])
         edited = st.data_editor(
-            df, num_rows="dynamic", use_container_width=True, key="editor_dash", hide_index=True,
+            df, num_rows="dynamic", use_container_width=True, key=dash_edit, hide_index=True, height=400,
             column_config={
                 "dashboard": st.column_config.TextColumn("Dashboard / Report", required=True),
                 "audience":  st.column_config.TextColumn("Audience (roles)"),
@@ -549,11 +604,44 @@ def render_form():
             try:
                 for sec_key, state_key in SECTION_STATE_KEYS.items():
                     db.save_response(st.session_state.contributor_id, sec_key, st.session_state.get(state_key) or {})
+                st.session_state["_last_force_save"] = True
                 st.success("✅ Saved. You can keep editing — your email is the key, just come back anytime.")
             except Exception as e:
                 st.error(f"Save failed: {e}")
     with info:
-        st.info("💡 Use the **same email** later to come back and edit. Multiple roles per brand contribute — answers merge into one report.")
+        st.info("💡 Auto-save runs on every change. The big button above just confirms the final submit.")
+
+    # ----- AUTOSAVE: persist changed sections every rerun -----
+    _autosave_form()
+
+
+import copy as _copy
+
+def _autosave_form():
+    """Save any section whose payload has changed since the last save. Runs on every rerun."""
+    cid = st.session_state.get("contributor_id")
+    if not cid:
+        return
+    # Reset saved-tracker if the contributor changed (resume flow)
+    if st.session_state.get("_autosave_cid") != cid:
+        st.session_state["_autosave_cid"] = cid
+        for sk in SECTION_STATE_KEYS:
+            st.session_state.pop(f"_saved_{sk}", None)
+
+    saved = []
+    for sec_key, state_key in SECTION_STATE_KEYS.items():
+        payload = st.session_state.get(state_key) or {}
+        last = st.session_state.get(f"_saved_{sec_key}")
+        if payload != last:
+            try:
+                db.save_response(cid, sec_key, payload)
+                st.session_state[f"_saved_{sec_key}"] = _copy.deepcopy(payload)
+                saved.append(sec_key)
+            except Exception as e:
+                # Store the error but don't crash the UI
+                st.session_state["_autosave_last_error"] = str(e)
+    if saved:
+        st.toast(f"💾 Auto-saved {len(saved)} section(s)", icon="✅")
 
 
 # =====================================================================
@@ -588,7 +676,7 @@ def render_admin():
 </div>
 """, unsafe_allow_html=True)
 
-    tab_brand, tab_compare = st.tabs(["📊 Brand Dashboard", "🔄 Cross-Brand Comparison"])
+    tab_brand, tab_compare, tab_diag = st.tabs(["📊 Brand Dashboard", "🔄 Cross-Brand Comparison", "🩺 Diagnostics"])
 
     # ---------- Brand Dashboard ----------
     with tab_brand:
@@ -787,6 +875,52 @@ def render_admin():
             data=reports.build_cross_brand_csv(bundles),
             file_name="Redington_Discovery_AllBrands.csv", mime="text/csv",
         )
+
+    # ---------- Diagnostics ----------
+    with tab_diag:
+        st.subheader("🩺 Diagnostics — every contributor across every brand")
+        st.caption("Shows who started a session, what brand they picked, and whether each section actually has data saved. Use this to spot incomplete submissions.")
+        try:
+            all_contribs = db.list_contributors()
+        except Exception as e:
+            st.error(f"DB error: {e}"); return
+
+        if not all_contribs:
+            st.info("No contributors in the database yet.")
+            return
+
+        diag_rows = []
+        for c in all_contribs:
+            try:
+                resp = db.get_responses_for_contributor(c["id"])
+            except Exception:
+                resp = {}
+            filled = []
+            empty = []
+            for sk in A.ALL_SECTION_KEYS:
+                payload = resp.get(sk, {}) or {}
+                if A._section_filled(payload, sk):
+                    filled.append(sk)
+                else:
+                    empty.append(sk)
+            diag_rows.append({
+                "Brand": c["brand"], "Name": c["name"], "Email": c["email"], "Role": c["role"],
+                "Last update": c["submitted_at"][:19].replace("T"," "),
+                "Sections filled": len(filled),
+                "Sections total": len(A.ALL_SECTION_KEYS),
+                "Status": "✅ Has data" if filled else "⚠️ Empty",
+                "Empty sections": ", ".join(empty) if empty else "—",
+            })
+        diag_df = pd.DataFrame(diag_rows).sort_values(["Brand", "Last update"], ascending=[True, False])
+        st.dataframe(diag_df, use_container_width=True, hide_index=True)
+
+        empties = [r for r in diag_rows if r["Status"].startswith("⚠️")]
+        if empties:
+            st.warning(
+                f"⚠️ {len(empties)} contributor(s) have NO data saved yet. "
+                "If they think they submitted, the most likely cause was the old data-editor bug (now fixed by autosave). "
+                "Ask them to re-open the form with the same email — their session resumes — fill again, and the autosave will persist it."
+            )
 
 
 # ---------- Router ----------
