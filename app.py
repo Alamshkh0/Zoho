@@ -280,7 +280,8 @@ def _ensure_init(init_key: str, state_key: str):
         _reset_editor_state(f"editor_{state_key}")
 
 
-def _field_builder(label: str, state_key: str, suggestion_pool: list[dict], help_text: str = "") -> list[dict]:
+def _field_builder(label: str, state_key: str, suggestion_pool: list[dict],
+                    help_text: str = "", height: int = 460) -> list[dict]:
     init_key = f"init_{state_key}"
     edit_key = f"editor_{state_key}"
     _ensure_init(init_key, state_key)
@@ -288,7 +289,7 @@ def _field_builder(label: str, state_key: str, suggestion_pool: list[dict], help
     st.markdown(f"#### {label}")
     if help_text: st.caption(help_text)
 
-    cols = st.columns([1, 1, 4])
+    cols = st.columns([1, 1, 1, 3])
     with cols[0]:
         if suggestion_pool and st.button("➕ Load suggestions", key=f"load_{state_key}"):
             existing = list(st.session_state[init_key])
@@ -304,14 +305,16 @@ def _field_builder(label: str, state_key: str, suggestion_pool: list[dict], help
             st.session_state[init_key] = []
             st.session_state[state_key]["fields"] = []
             _reset_editor_state(edit_key)
-
-    st.caption("💡 Hover over the table and click the **⛶** icon (top-right) to enter fullscreen for easier data entry.")
+    with cols[2]:
+        if st.button("📺 Fullscreen", key=f"fs_{state_key}", help="Open this table at full page size for easier editing"):
+            st.session_state["_fullscreen_section"] = state_key
+            st.rerun()
 
     rows = st.session_state[init_key]
     df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=list(FIELD_COLUMNS.keys()))
     edited = st.data_editor(
         df, num_rows="dynamic", use_container_width=True,
-        column_config=FIELD_COLUMNS, key=edit_key, hide_index=True, height=460,
+        column_config=FIELD_COLUMNS, key=edit_key, hide_index=True, height=height,
     )
     fields = edited.to_dict(orient="records")
     st.session_state[state_key]["fields"] = fields
@@ -322,9 +325,148 @@ def _field_builder(label: str, state_key: str, suggestion_pool: list[dict], help
 # Page 2 — Discovery Form
 # ============================================================
 
+_FS_TITLES = {
+    "sec_partner_360":           "B. Partner 360 — Fields",
+    "sec_customer_360":          "C. Customer 360 — Fields",
+    "sec_sales_opp_details":     "D1. Sales — Opportunity Details",
+    "sec_sales_contact_details": "D2. Sales — Opportunity Contact Details",
+    "sec_sales_deal_details":    "D3. Sales — Opportunity Deal Details",
+    "sec_approvals":             "E. Approval Stages & Workflow",
+    "sec_dashboards":            "F. Dashboards & Reports Expected",
+}
+_FS_SUGGESTIONS = {
+    "sec_partner_360":           sg.PARTNER_360_FIELDS,
+    "sec_customer_360":          sg.CUSTOMER_360_FIELDS,
+    "sec_sales_opp_details":     sg.REDHAT_OPPORTUNITY_DETAILS,
+    "sec_sales_contact_details": sg.REDHAT_CONTACT_DETAILS,
+    "sec_sales_deal_details":    sg.REDHAT_DEAL_DETAILS,
+}
+
+
+def _render_fullscreen_editor(state_key: str):
+    """Render a single table at full-page size with sidebar hidden.
+
+    Triggered by the 📺 Fullscreen button on any field-builder / approvals /
+    dashboards editor. Exit returns to the normal form view.
+    """
+    # Hide the sidebar + give the editor more horizontal room while in FS mode
+    st.markdown("""
+<style>
+section[data-testid="stSidebar"] { display: none !important; }
+[data-testid="collapsedControl"]  { display: none !important; }
+.block-container { max-width: 100% !important; padding-left: 1.2rem; padding-right: 1.2rem; padding-top: .6rem; }
+</style>
+""", unsafe_allow_html=True)
+
+    title = _FS_TITLES.get(state_key, "Editor")
+    head_l, head_r = st.columns([5, 1])
+    with head_l:
+        st.markdown(f"### 📺 {title} — Fullscreen")
+        st.caption(f"Editing as **{st.session_state.name}** ({st.session_state.role}) · {st.session_state.brand} · auto-save is on")
+    with head_r:
+        if st.button("✕ Exit fullscreen", type="primary", use_container_width=True, key=f"exit_fs_{state_key}"):
+            st.session_state["_fullscreen_section"] = None
+            st.rerun()
+
+    st.divider()
+
+    # Dispatch by section type
+    if state_key == "sec_approvals":
+        _fs_approvals()
+    elif state_key == "sec_dashboards":
+        _fs_dashboards()
+    else:
+        _field_builder(title, state_key, _FS_SUGGESTIONS.get(state_key, []),
+                       help_text="", height=720)
+
+    # Autosave still runs in fullscreen mode
+    _autosave_form()
+
+
+def _fs_approvals():
+    appr_init = "init_sec_approvals"; appr_edit = "editor_approvals"
+    cid_marker = f"_init_cid_{appr_init}"
+    if appr_init not in st.session_state or st.session_state.get(cid_marker) != st.session_state.contributor_id:
+        st.session_state[appr_init] = list(st.session_state.sec_approvals.get("stages", []) or [])
+        st.session_state[cid_marker] = st.session_state.contributor_id
+        _reset_editor_state(appr_edit)
+
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        if st.button("➕ Load suggestions", key="load_approvals_fs"):
+            existing = list(st.session_state[appr_init])
+            names = {s.get("stage","").strip().lower() for s in existing}
+            for s in sg.APPROVAL_STAGE_SUGGESTIONS:
+                if s["stage"].strip().lower() not in names: existing.append(dict(s))
+            st.session_state[appr_init] = existing
+            st.session_state.sec_approvals["stages"] = existing
+            _reset_editor_state(appr_edit)
+    with c2:
+        if st.button("🗑️ Clear all", key="clear_approvals_fs"):
+            st.session_state[appr_init] = []
+            st.session_state.sec_approvals["stages"] = []
+            _reset_editor_state(appr_edit)
+
+    rows = st.session_state[appr_init]
+    df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["stage","approver","trigger","sla_hours","can_revert"])
+    edited = st.data_editor(
+        df, num_rows="dynamic", use_container_width=True, key=appr_edit, hide_index=True, height=720,
+        column_config={
+            "stage":      st.column_config.TextColumn("Stage", required=True, width="medium"),
+            "approver":   st.column_config.TextColumn("Approver / Role", width="medium"),
+            "trigger":    st.column_config.TextColumn("Trigger / Condition", width="large"),
+            "sla_hours":  st.column_config.NumberColumn("SLA (h)", min_value=0, step=1, width="small"),
+            "can_revert": st.column_config.CheckboxColumn("Revert?", width="small"),
+        },
+    )
+    st.session_state.sec_approvals["stages"] = edited.to_dict(orient="records")
+
+
+def _fs_dashboards():
+    dash_init = "init_sec_dashboards"; dash_edit = "editor_dash"
+    cid_marker = f"_init_cid_{dash_init}"
+    if dash_init not in st.session_state or st.session_state.get(cid_marker) != st.session_state.contributor_id:
+        st.session_state[dash_init] = list(st.session_state.sec_dashboards.get("dashboards", []) or [])
+        st.session_state[cid_marker] = st.session_state.contributor_id
+        _reset_editor_state(dash_edit)
+
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        if st.button("➕ Load suggestions", key="load_dash_fs"):
+            existing = list(st.session_state[dash_init])
+            names = {d.get("dashboard","").strip().lower() for d in existing}
+            for s in sg.DASHBOARD_SUGGESTIONS:
+                if s["dashboard"].strip().lower() not in names: existing.append(dict(s))
+            st.session_state[dash_init] = existing
+            st.session_state.sec_dashboards["dashboards"] = existing
+            _reset_editor_state(dash_edit)
+    with c2:
+        if st.button("🗑️ Clear all", key="clear_dash_fs"):
+            st.session_state[dash_init] = []
+            st.session_state.sec_dashboards["dashboards"] = []
+            _reset_editor_state(dash_edit)
+
+    rows = st.session_state[dash_init]
+    df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["dashboard","audience","frequency"])
+    edited = st.data_editor(
+        df, num_rows="dynamic", use_container_width=True, key=dash_edit, hide_index=True, height=720,
+        column_config={
+            "dashboard": st.column_config.TextColumn("Dashboard / Report", required=True, width="large"),
+            "audience":  st.column_config.TextColumn("Audience (roles)", width="medium"),
+            "frequency": st.column_config.SelectboxColumn("Frequency", options=["Real-time","Daily","Weekly","Monthly","Quarterly","On-demand"], width="small"),
+        },
+    )
+    st.session_state.sec_dashboards["dashboards"] = edited.to_dict(orient="records")
+
+
 def render_form():
     if not st.session_state.contributor_id:
         st.warning("Please start a session first (sidebar → 🏁 Start)."); return
+
+    # Fullscreen short-circuit: a section was promoted to full-page mode
+    fs_section = st.session_state.get("_fullscreen_section")
+    if fs_section:
+        _render_fullscreen_editor(fs_section); return
 
     _hero(
         "BRAND DISCOVERY",
@@ -450,7 +592,7 @@ def render_form():
             st.session_state[cid_marker] = st.session_state.contributor_id
             _reset_editor_state(appr_edit)
 
-        c1, c2 = st.columns([1, 5])
+        c1, c2, c3, _ = st.columns([1, 1, 1, 3])
         with c1:
             if st.button("➕ Load suggestions", key="load_approvals"):
                 existing = list(st.session_state[appr_init])
@@ -465,6 +607,9 @@ def render_form():
                 st.session_state[appr_init] = []
                 st.session_state.sec_approvals["stages"] = []
                 _reset_editor_state(appr_edit)
+        with c3:
+            if st.button("📺 Fullscreen", key="fs_approvals"):
+                st.session_state["_fullscreen_section"] = "sec_approvals"; st.rerun()
 
         rows = st.session_state[appr_init]
         df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["stage","approver","trigger","sla_hours","can_revert"])
@@ -493,7 +638,7 @@ def render_form():
             st.session_state[cid_marker_d] = st.session_state.contributor_id
             _reset_editor_state(dash_edit)
 
-        c1, c2 = st.columns([1, 5])
+        c1, c2, c3, _ = st.columns([1, 1, 1, 3])
         with c1:
             if st.button("➕ Load suggestions", key="load_dash"):
                 existing = list(st.session_state[dash_init])
@@ -508,6 +653,9 @@ def render_form():
                 st.session_state[dash_init] = []
                 st.session_state.sec_dashboards["dashboards"] = []
                 _reset_editor_state(dash_edit)
+        with c3:
+            if st.button("📺 Fullscreen", key="fs_dash"):
+                st.session_state["_fullscreen_section"] = "sec_dashboards"; st.rerun()
 
         rows = st.session_state[dash_init]
         df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["dashboard","audience","frequency"])
