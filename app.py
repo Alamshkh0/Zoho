@@ -933,8 +933,14 @@ def _admin_brands():
 
     try:
         brands = db.list_brands(active_only=False)
+        # The fallback returns dicts with id=None — that means the brands table doesn't exist
+        if brands and all(b.get("id") is None for b in brands):
+            st.warning("📌 **Setup needed** — the `brands` table doesn't exist in Supabase yet. "
+                       "Open your Supabase project → SQL Editor → paste the contents of `schema_v3.sql` from the repo → click Run. "
+                       "Then refresh this page. Until then the brand picker uses the hard-coded fallback list (AWS / Microsoft / Red Hat).")
+            return
     except Exception as e:
-        st.error(f"DB error: {e}. Did you run schema_v3.sql?"); return
+        st.error(f"DB error: {e}. Did you run schema_v3.sql in Supabase?"); return
 
     if not brands:
         st.info("No brands in DB yet — add the first one below.")
@@ -972,30 +978,30 @@ def _admin_brands():
 
     st.markdown("---")
     st.markdown("#### ➕ Add a new brand")
+    st.caption("New brands use the same form structure and shared starter library as existing brands — contributors get the same Load Suggestions / Red Hat / AWS starters.")
     with st.form("add_brand_form", clear_on_submit=True):
         name = st.text_input("Brand name", placeholder="e.g. Google Cloud, Oracle, VMware")
         logo = st.text_input("Logo URL (optional)", placeholder="https://...")
-        starter_raw = st.text_area("Starter template (optional JSON) — paste a {section: [field rows]} object", height=160,
-                                   placeholder='{"partner_360":[{"field":"Partner Name","type":"Text","mandatory":true}]}')
         submit = st.form_submit_button("Add brand", type="primary")
         if submit:
             if not name.strip():
                 st.error("Brand name is required.")
             else:
-                starter = None
-                if starter_raw.strip():
-                    try:
-                        starter = json.loads(starter_raw)
-                    except Exception as e:
-                        st.error(f"Starter template is not valid JSON: {e}")
-                        return
                 try:
-                    row = db.add_brand(name.strip(), logo_url=logo.strip() or None,
-                                       starter_template=starter, created_by=st.session_state.get("email"))
-                    audit.log("brand_added", brand_name=name.strip(), has_logo=bool(logo.strip()), has_starter=bool(starter))
+                    row = db.add_brand(name.strip(),
+                                       logo_url=logo.strip() or None,
+                                       starter_template=None,
+                                       created_by=st.session_state.get("email"))
+                    audit.log("brand_added", brand_name=name.strip(), has_logo=bool(logo.strip()))
                     st.success(f"✅ Added {row['name']}"); st.rerun()
                 except Exception as e:
-                    st.error(f"Add failed: {e}")
+                    msg = str(e)
+                    if "brands" in msg.lower() and ("schema cache" in msg.lower() or "does not exist" in msg.lower()):
+                        st.error("The `brands` table doesn't exist in your Supabase project yet. "
+                                 "Open Supabase → SQL Editor → paste the contents of `schema_v3.sql` from the repo → click Run, "
+                                 "then come back and add the brand.")
+                    else:
+                        st.error(f"Add failed: {msg}")
 
 
 def _admin_bulk_import():
