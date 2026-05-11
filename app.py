@@ -1,8 +1,10 @@
-"""Redington Zoho CRM Discovery — Streamlit app.
+"""Redington Zoho CRM Discovery — Streamlit app (v3 dark redesign).
 
 Run:    streamlit run app.py
 Deploy: push to GitHub -> https://share.streamlit.io
 """
+import copy as _copy
+import json
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -13,6 +15,9 @@ import db
 import reports
 import suggestions as sg
 import analysis as A
+import audit
+import theme
+import excel_io
 
 st.set_page_config(
     page_title="Redington Zoho CRM Discovery",
@@ -20,85 +25,39 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="auto",
 )
+theme.apply(st)
 
-# ---------- Global CSS ----------
-st.markdown("""
-<style>
-    .block-container { padding-top: 1rem; padding-bottom: 2rem; max-width: 1240px;}
-    h1, h2, h3 { color: #1A1A1A; letter-spacing: -0.01em;}
-    h1 { font-weight: 800;}
+# ---------- Helpers ----------
 
-    /* Hero banner */
-    .hero {
-        background: linear-gradient(135deg, #C8102E 0%, #8A0B20 60%, #1A1A1A 100%);
-        color: white; border-radius: 18px; padding: 28px 32px; margin-bottom: 18px;
-        box-shadow: 0 10px 30px rgba(200,16,46,.18);
-    }
-    .hero .kicker { font-size: 12px; letter-spacing: 2px; text-transform: uppercase; opacity: .85;}
-    .hero h1 { color: white; font-size: 2.1rem; margin: 6px 0 8px 0;}
-    .hero p  { color: rgba(255,255,255,.92); font-size: 1.02rem; margin: 0; max-width: 720px; line-height: 1.55;}
+def _plotly_layout(**overrides):
+    base = dict(theme.PLOTLY_LAYOUT)
+    base.update(overrides)
+    return base
 
-    /* Stat cards */
-    .stat-card {
-        background: linear-gradient(135deg, #FFFFFF, #FAFAFA);
-        border: 1px solid #EEE; border-radius: 14px; padding: 18px 18px;
-        box-shadow: 0 2px 10px rgba(0,0,0,.04);
-    }
-    .stat-card:hover { box-shadow: 0 6px 18px rgba(200,16,46,.10); transform: translateY(-1px); transition: all .15s;}
-    .pill {
-        display: inline-block; padding: 3px 12px; border-radius: 999px;
-        background: #FCE3E6; color: #C8102E; font-size: 11px; font-weight: 700; letter-spacing: 1px;
-    }
-    .pill-grey { background: #EEE; color: #555;}
-    .pill-blue { background: #E8F4FD; color: #0F4C81;}
 
-    /* KPI metric tweaks */
-    div[data-testid="stMetricValue"] { color: #C8102E; font-weight: 800; font-size: 2rem;}
-    div[data-testid="stMetricLabel"] { color: #555; font-weight: 500;}
-    div[data-testid="stMetricDelta"] svg { display: none;}
-
-    /* Buttons */
-    div.stButton>button[kind="primary"] {
-        background: linear-gradient(135deg, #C8102E, #A50D26);
-        border: 0; color: white; font-weight: 700; padding: 10px 16px; border-radius: 10px;
-    }
-    div.stButton>button[kind="primary"]:hover { background: linear-gradient(135deg, #A50D26, #8A0B20);}
-    div.stButton>button {
-        border-radius: 10px; border: 1px solid #DDD; font-weight: 500;
-    }
-
-    /* Tabs */
-    .stTabs [data-baseweb="tab-list"] { gap: 6px; flex-wrap: wrap;}
-    .stTabs [data-baseweb="tab"] {
-        height: 42px; padding: 0 16px; background: #F5F5F5; border-radius: 10px 10px 0 0;
-        font-weight: 600;
-    }
-    .stTabs [aria-selected="true"] { background: #C8102E !important; color: white !important;}
-
-    /* Section intro card */
-    .section-intro {
-        background: #FAFAFA; border-left: 4px solid #C8102E; border-radius: 6px;
-        padding: 14px 18px; margin-bottom: 16px; color: #333; line-height: 1.55;
-    }
-
-    /* Mobile */
-    @media (max-width: 640px) {
-        .block-container { padding: 0.6rem 0.5rem 1.5rem 0.5rem;}
-        .hero { padding: 18px 18px;}
-        .hero h1 { font-size: 1.4rem;}
-        .hero p { font-size: 0.92rem;}
-        h1 { font-size: 1.5rem;}
-        div[data-testid="stMetricValue"] { font-size: 1.5rem;}
-    }
-</style>
+def _hero(kicker: str, title: str, subtitle: str):
+    st.markdown(f"""
+<div class='hero'>
+  <div class='kicker'>{kicker}</div>
+  <h1>{title}</h1>
+  <p>{subtitle}</p>
+</div>
 """, unsafe_allow_html=True)
 
 
-# ---------- Session-state ----------
+def _intro(text: str):
+    st.markdown(f"<div class='section-intro'>{text}</div>", unsafe_allow_html=True)
+
+
+# ---------- Session-state defaults ----------
+
 def _init_state():
     defaults = {
         "contributor_id": None,
-        "brand": None, "name": "", "email": "", "role": "PAM",
+        "brand": None,
+        "name": "",
+        "email": "",
+        "role": "PAM",
         "admin_unlocked": False,
         "sec_people": {},
         "sec_partner_360": {"fields": []},
@@ -114,7 +73,6 @@ def _init_state():
     for k, v in defaults.items():
         st.session_state.setdefault(k, v)
 _init_state()
-
 
 SECTION_STATE_KEYS = {
     "people":                "sec_people",
@@ -142,129 +100,132 @@ def _load_responses_into_state(contributor_id: str):
 
 
 def _completion_pct() -> int:
-    done = sum(1 for sk, sv in SECTION_STATE_KEYS.items()
-               if A._section_filled(st.session_state.get(sv) or {}, sk))
-    return int(round(100 * done / len(SECTION_STATE_KEYS)))
+    done = 0
+    total = len(SECTION_STATE_KEYS)
+    for sec_key, state_key in SECTION_STATE_KEYS.items():
+        payload = st.session_state.get(state_key) or {}
+        if A._section_filled(payload, sec_key):
+            done += 1
+    return int(round(100 * done / total))
 
 
 # ---------- Sidebar ----------
-PAGE_INTRO = "🏁 Start"
+
+PAGE_INTRO = "🏁 Start / Resume"
 PAGE_FORM  = "📝 Discovery Form"
-PAGE_ADMIN = "🔒 Admin & Reports"
+PAGE_ADMIN = "🔒 Admin"
 
 with st.sidebar:
-    st.markdown("### 📋 Redington")
-    st.caption("Zoho CRM Discovery")
+    st.markdown("<div style='font-weight:800; font-size:1.05rem; color:#E6EAF2'>📋 Redington</div>", unsafe_allow_html=True)
+    st.markdown("<div style='color:#9AA3B2; font-size:.8rem; letter-spacing:.18em; text-transform:uppercase'>Zoho CRM Discovery</div>", unsafe_allow_html=True)
+    st.markdown("---")
     page = st.radio("Navigate", [PAGE_INTRO, PAGE_FORM, PAGE_ADMIN], index=0, label_visibility="collapsed")
     st.markdown("---")
     if st.session_state.contributor_id:
-        st.success(f"**{st.session_state.name}**\n\n📛 {st.session_state.role}\n\n🏷️ {st.session_state.brand}")
+        st.markdown(f"<span class='pill pill-ok'>● ACTIVE</span>", unsafe_allow_html=True)
+        st.markdown(f"**{st.session_state.name}**")
+        st.markdown(f"<span style='color:#9AA3B2; font-size:.85rem'>{st.session_state.role} · {st.session_state.brand}</span>", unsafe_allow_html=True)
         st.progress(_completion_pct() / 100, text=f"{_completion_pct()}% complete")
     else:
-        st.info("Start a session →")
-    st.markdown("---")
-    st.markdown("##### 📚 Quick guide")
-    st.caption("**1. Start** — pick your brand and identify yourself.\n\n**2. Form** — eight tabs. Use 'Load suggestions' for starter fields, then tailor freely.\n\n**3. Save** — your email is the key. Come back anytime to edit.")
+        st.markdown("<span class='pill pill-violet'>NEW</span>", unsafe_allow_html=True)
+        st.caption("Start a session to begin.")
 
 
-# =====================================================================
-# Page 1 — Start
-# =====================================================================
+# ============================================================
+# Page 1 — Start / Resume
+# ============================================================
+
 def render_intro():
-    # Hero
-    st.markdown("""
-<div class="hero">
-  <div class="kicker">REDINGTON · CLOUD & AI PRACTICE</div>
-  <h1>📋 Zoho CRM Discovery — Brand by Brand</h1>
-  <p>A structured way to capture <b>what every brand needs</b> from Zoho CRM before we hand off to the implementation team.
-  Each brand (Red Hat, AWS, Microsoft …) defines its own fields, workflow, approvals, dashboards, integrations and data sources —
-  because every practice is different. Multiple stakeholders contribute; the system merges everything into a single
-  branded requirements pack (PDF / Word / CSV).</p>
+    _hero(
+        "BRAND-BY-BRAND DISCOVERY",
+        "Zoho CRM Discovery, redesigned.",
+        "Capture every brand's CRM requirements in one place. Pick your brand, fill the form, "
+        "and let the admin generate a polished requirements pack for the Zoho implementation team. "
+        "Use the same email later to resume your session.",
+    )
+
+    # Brand stat cards
+    try:
+        counts = db.count_contributors_per_brand()
+        brands = db.list_brands()
+    except Exception:
+        counts = {}
+        brands = [{"name": b, "logo_url": None} for b in config.BRANDS]
+
+    if not brands:
+        st.warning("No active brands. Admin → Brands to add one.")
+    else:
+        cols = st.columns(min(4, len(brands)))
+        for i, b in enumerate(brands):
+            with cols[i % len(cols)]:
+                logo_md = ""
+                if b.get("logo_url"):
+                    logo_md = f"<img src='{b['logo_url']}' style='height:30px; object-fit:contain; margin-bottom:4px' />"
+                st.markdown(f"""
+<div class='card' style='text-align:left'>
+  <div class='pill'>BRAND</div>
+  {logo_md}
+  <div style='font-size:1.35rem; font-weight:800; color:#E6EAF2; margin-top:8px'>{b['name']}</div>
+  <div style='color:#9AA3B2; font-size:.85rem; margin-top:4px'>{counts.get(b['name'], 0)} contributor(s)</div>
 </div>
 """, unsafe_allow_html=True)
 
-    # Objective & how-it-works in 3 cards
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.markdown("""<div class='stat-card'>
-<span class='pill'>OBJECTIVE</span>
-<h4 style='margin-top:10px'>Capture the truth, brand by brand</h4>
-<p style='color:#555; font-size:14px; line-height:1.55'>
-Avoid one-size-fits-all assumptions. Capture each brand's real-world fields, workflows, and dashboards directly from the people who run the business.
-</p></div>""", unsafe_allow_html=True)
-    with c2:
-        st.markdown("""<div class='stat-card'>
-<span class='pill pill-blue'>APPROACH</span>
-<h4 style='margin-top:10px'>Multi-contributor, mergeable</h4>
-<p style='color:#555; font-size:14px; line-height:1.55'>
-PAM, BSM, PM and Pre-sales each fill the form for their brand. One email = one row; same email returns to your draft and lets you edit.
-</p></div>""", unsafe_allow_html=True)
-    with c3:
-        st.markdown("""<div class='stat-card'>
-<span class='pill pill-grey'>OUTCOME</span>
-<h4 style='margin-top:10px'>Branded handover pack</h4>
-<p style='color:#555; font-size:14px; line-height:1.55'>
-A polished PDF + Word + CSV per brand, plus auto-generated insights, conflicts, recommendations, and integration / data-source maps for the Zoho team.
-</p></div>""", unsafe_allow_html=True)
+    st.markdown("")
 
-    st.markdown("### 📊 Live brand stats")
-    st.caption("How many contributors per brand have started so far.")
-    try:
-        counts = db.count_contributors_per_brand()
-    except Exception:
-        counts = {}
-    cols = st.columns(len(config.BRANDS))
-    for i, b in enumerate(config.BRANDS):
-        with cols[i]:
-            with st.container(border=True):
-                st.markdown(f"<span class='pill'>BRAND</span>", unsafe_allow_html=True)
-                st.markdown(f"### {b}")
-                st.metric("Contributors", counts.get(b, 0))
-
-    st.markdown("---")
-    st.markdown("### 🚀 Start or resume your contribution")
-    st.caption("Use the **same email** later to come back and edit. Multiple roles per brand can contribute — answers merge.")
-
+    st.markdown("#### Start or resume")
+    brand_names = [b["name"] for b in brands] if brands else config.BRANDS
     c1, c2 = st.columns(2)
     with c1:
-        brand = st.selectbox("Brand", config.BRANDS, index=0)
-        name  = st.text_input("Your full name", value=st.session_state.name, placeholder="e.g. Alam Shaikh")
+        brand = st.selectbox("Brand", brand_names, index=0)
+        name  = st.text_input("Your full name", value=st.session_state.name)
     with c2:
-        role  = st.selectbox("Your role", config.ROLES, index=config.ROLES.index(st.session_state.role) if st.session_state.role in config.ROLES else 0)
-        email = st.text_input("Email (used to resume your session)", value=st.session_state.email, placeholder="you@redington.com")
+        role_idx = config.ROLES.index(st.session_state.role) if st.session_state.role in config.ROLES else 0
+        role  = st.selectbox("Your role", config.ROLES, index=role_idx)
+        email = st.text_input("Email (used to resume your session)", value=st.session_state.email)
 
     if email and brand:
         try:
             existing = db.find_contributor_by_email(brand, email)
             if existing:
-                st.info(f"🔁 Found a previous submission for **{email}** on **{brand}** — last update {existing['submitted_at'][:19].replace('T',' ')}. Click below to **resume** — your earlier answers reload automatically.")
+                st.info(f"🔁 Found prior submission for **{email}** on **{brand}** (last update {existing['submitted_at'][:19].replace('T',' ')}). Click Start to resume — your earlier answers will reload.")
         except Exception:
             pass
 
-    if st.button("➡️ Start / Resume session", type="primary", use_container_width=True):
+    if st.button("➡️  Start / Resume session", type="primary", use_container_width=True):
         if not name.strip() or not email.strip():
-            st.error("Please enter your name and email."); return
+            st.error("Please enter your name and email.")
+            return
         try:
             row = db.upsert_contributor(brand, name.strip(), email.strip(), role)
         except Exception as e:
-            st.error(f"Could not connect to database. Check that schema.sql was run in Supabase. Error: {e}"); return
+            st.error(f"Could not connect to database. Run schema_v3.sql in Supabase. Error: {e}")
+            return
+        returning = bool(row.get("submitted_at") and (row.get("name") and row.get("email")))
         st.session_state.contributor_id = row["id"]
         st.session_state.brand = brand
         st.session_state.name = name.strip()
         st.session_state.email = email.strip()
         st.session_state.role = role
         _load_responses_into_state(row["id"])
-        st.success("✅ Session ready — open **📝 Discovery Form** in the sidebar.")
+        audit.log("session_start", actor_email=email.strip(), brand=brand, contributor_id=row["id"], role=role, returning=returning)
+        st.success("✅ Session ready — open **Discovery Form** in the sidebar.")
         st.balloons()
 
 
-# =====================================================================
-# Field-builder UI
-# =====================================================================
-# Defensive: fall back if a stale deployed config.py is missing DATA_SOURCES
+# ============================================================
+# Field-builder helpers (anti data-loss pattern)
+# ============================================================
+
+def _ensure_new_columns(rows: list[dict]) -> list[dict]:
+    for r in rows:
+        r.setdefault("integration_needed", False)
+        r.setdefault("data_capture_source", "Manual")
+    return rows
+
+
 _DATA_SOURCES = getattr(config, "DATA_SOURCES",
     ["Manual", "CQ", "SAP", "AWS ACE", "Microsoft Partner Center", "Salesforce", "API", "Other"])
-_FIELD_TYPES  = getattr(config, "FIELD_TYPES",
+_FIELD_TYPES = getattr(config, "FIELD_TYPES",
     ["Text", "Number", "Date", "Dropdown", "Multi-select", "Yes/No"])
 
 FIELD_COLUMNS = {
@@ -278,32 +239,18 @@ FIELD_COLUMNS = {
 }
 
 
-def _ensure_new_columns(rows: list[dict]) -> list[dict]:
-    """Backfill the new columns onto any row that came from old saved data."""
-    for r in rows:
-        r.setdefault("integration_needed", False)
-        r.setdefault("data_capture_source", "Manual")
-    return rows
-
-
 def _reset_editor_state(edit_key: str):
-    """Drop the data_editor's accumulated delta state so the next render starts fresh."""
     if edit_key in st.session_state:
         del st.session_state[edit_key]
 
 
 def _ensure_init(init_key: str, state_key: str):
-    """Ensure init_key (the stable base df for the editor) is in sync with the saved fields.
-
-    Resets when the contributor changes (e.g., resume of a different session).
-    """
     cid_marker = f"_init_cid_{init_key}"
     current_cid = st.session_state.get("contributor_id")
     if init_key not in st.session_state or st.session_state.get(cid_marker) != current_cid:
         saved = _ensure_new_columns(list(st.session_state[state_key].get("fields", []) or []))
         st.session_state[init_key] = saved
         st.session_state[cid_marker] = current_cid
-        # Force the editor to start fresh against the new base
         _reset_editor_state(f"editor_{state_key}")
 
 
@@ -338,45 +285,37 @@ def _field_builder(label: str, state_key: str, suggestion_pool: list[dict], help
         df, num_rows="dynamic", use_container_width=True,
         column_config=FIELD_COLUMNS, key=edit_key, hide_index=True, height=460,
     )
-    # Mirror current editor view to state_key for autosave/reporting (do NOT mutate init_key)
     fields = edited.to_dict(orient="records")
     st.session_state[state_key]["fields"] = fields
     return fields
 
 
-def _intro(text: str):
-    st.markdown(f"<div class='section-intro'>{text}</div>", unsafe_allow_html=True)
+# ============================================================
+# Page 2 — Discovery Form
+# ============================================================
 
-
-# =====================================================================
-# Page 2 — Form
-# =====================================================================
 def render_form():
     if not st.session_state.contributor_id:
         st.warning("Please start a session first (sidebar → 🏁 Start)."); return
 
-    st.markdown(f"""
-<div class='hero' style='padding:20px 24px'>
-  <div class='kicker'>BRAND DISCOVERY</div>
-  <h1 style='font-size:1.6rem; margin:4px 0 6px 0'>📝 {st.session_state.brand} — Discovery Form</h1>
-  <p>Contributing as <b>{st.session_state.name}</b> ({st.session_state.role}). Eight sections — fill what you know,
-  skip what you don't, hit <b>Save & Submit</b> at the bottom. You can come back anytime with the same email.</p>
-</div>
-""", unsafe_allow_html=True)
-
-    st.info("💡 **Auto-save is ON.** Press **Enter** or **Tab** out of a cell to commit your edit. "
-            "Changes save to the database within ~1 second after you commit. You can close the tab and come back — your work is safe.")
+    _hero(
+        "BRAND DISCOVERY",
+        f"📝 {st.session_state.brand} — Discovery Form",
+        f"Contributing as <b style='color:#00E5FF'>{st.session_state.name}</b> ({st.session_state.role}). "
+        "Eight sections. Press Enter or Tab out of a cell to commit. Autosave is on.",
+    )
 
     pct = _completion_pct()
     k1, k2, k3, k4 = st.columns(4)
-    sections_done = sum(1 for sk,sv in SECTION_STATE_KEYS.items() if A._section_filled(st.session_state.get(sv) or {}, sk))
+    sections_done = sum(1 for sk,sv in SECTION_STATE_KEYS.items()
+                        if A._section_filled(st.session_state.get(sv) or {}, sk))
     fld_count = sum(len((st.session_state.get(sv) or {}).get('fields', []) or [])
                     for sk,sv in SECTION_STATE_KEYS.items() if sk in A.FIELD_BUILDER_SECTIONS)
     integ_count = sum(1 for sk,sv in SECTION_STATE_KEYS.items() if sk in A.FIELD_BUILDER_SECTIONS
                       for f in ((st.session_state.get(sv) or {}).get('fields') or []) if f.get('integration_needed'))
-    k1.metric("✅ Completion", f"{pct}%")
-    k2.metric("📂 Sections done", f"{sections_done} / {len(SECTION_STATE_KEYS)}")
-    k3.metric("🧱 Fields proposed", fld_count)
+    k1.metric("✅ Completion",      f"{pct}%")
+    k2.metric("📂 Sections",         f"{sections_done} / {len(SECTION_STATE_KEYS)}")
+    k3.metric("🧱 Fields",           fld_count)
     k4.metric("🔌 Need integration", integ_count)
     st.progress(pct / 100)
     st.divider()
@@ -389,9 +328,9 @@ def render_form():
 
     # A. People
     with tabs[0]:
-        _intro("""<b>Why this section matters</b> — Zoho needs to know <i>who</i> uses the system, in <i>what role</i>, and <i>who signs off</i> on configuration changes.
-        Capture the human side of the brand: lead, decision-maker, contributing roles, and rough user counts.
-        This drives license counts, role-based permissions, and stakeholder communication for the rollout.""")
+        _intro("""<b>Why this matters</b> — Zoho needs to know who uses the system, in what role, and who signs off.
+        Capture the human side: lead, decision-maker, contributing roles, rough user counts.
+        Drives license counts, role-based permissions, and stakeholder communication.""")
         s = st.session_state.sec_people
         c1, c2 = st.columns(2)
         with c1:
@@ -401,55 +340,42 @@ def render_form():
         with c2:
             s["brand_lead_email"] = st.text_input("Brand lead email", value=s.get("brand_lead_email", ""))
             s["roles_involved"]   = st.multiselect("Roles involved", config.ROLES, default=s.get("roles_involved", []))
-            s["occasional_users"] = st.text_input("Approx. occasional users",  value=s.get("occasional_users", ""))
+            s["occasional_users"] = st.text_input("Approx. occasional users", value=s.get("occasional_users", ""))
         s["notes"] = st.text_area("Anything else about the people side?", value=s.get("notes", ""), height=80)
 
     # B. Partner 360
     with tabs[1]:
         _intro("""<b>Partner 360</b> — the master partner record, shared across every brand.
-        Capture the fields you need on every partner (name, type, tier, region, certifications, …),
-        whether each one is mandatory, whether it needs <b>integration</b> from another system, and the
-        <b>data-capture source</b> (Manual entry, CQ, SAP, AWS ACE, etc.). This becomes the source-of-truth
-        contract for partner master data.""")
-        _field_builder(
-            "Partner 360 — Fields", "sec_partner_360", sg.PARTNER_360_FIELDS,
-            "Use 'Load suggestions' for common starter fields, then edit/delete/add freely.",
-        )
+        Capture the fields you need on every partner, mandatory flags, integration need, and data-capture source.""")
+        _field_builder("Partner 360 — Fields", "sec_partner_360", sg.PARTNER_360_FIELDS,
+            "Use 'Load suggestions' for common starter fields, then edit/delete/add freely.")
         st.session_state.sec_partner_360["notes"] = st.text_area(
             "Notes (source of truth, dedup approach, hierarchy)",
-            value=st.session_state.sec_partner_360.get("notes", ""), height=80,
-        )
+            value=st.session_state.sec_partner_360.get("notes", ""), height=80)
 
     # C. Customer 360
     with tabs[2]:
         _intro("""<b>Customer 360</b> — the master customer / end-user record, shared across brands.
-        Same idea as Partner 360 but for customers: name, industry, size, key contacts, hierarchy, renewals.
-        For each field, also flag whether it must be integrated and where the data lives today.""")
-        _field_builder(
-            "Customer 360 — Fields", "sec_customer_360", sg.CUSTOMER_360_FIELDS,
-            "Capture mandatory fields, hierarchy needs (parent/child accounts), and brand-specific extensions.",
-        )
+        Mandatory fields, hierarchy needs, brand-specific extensions, plus integration + source per field.""")
+        _field_builder("Customer 360 — Fields", "sec_customer_360", sg.CUSTOMER_360_FIELDS, "")
         st.session_state.sec_customer_360["notes"] = st.text_area(
             "Notes (renewals, hierarchies, dedup)",
-            value=st.session_state.sec_customer_360.get("notes", ""), height=80,
-        )
+            value=st.session_state.sec_customer_360.get("notes", ""), height=80)
 
-    # D. Sales / Opportunity
+    # D. Sales
     with tabs[3]:
         _intro("""<b>Sales — Opportunity / Lead / Deal</b>: three sub-sections.
-        Define the fields Zoho should capture on each opportunity. The Red Hat starter is partner-funnel-shaped
-        (Neutral → Upside → Strong Upside → Commit), the AWS starter is project-shaped
-        (Customer details → Project details with sales-activity progression).
-        <b>Mix and match — every brand owns its own structure.</b> Don't forget integration flag + data source on every field.""")
+        Define the fields Zoho should capture on each opportunity.
+        Red Hat starter = partner-funnel-shaped, AWS starter = project-shaped. Mix and match.""")
 
         def _seed_into(state_key: str, source: list[dict]):
             init_key = f"init_{state_key}"
             _ensure_init(init_key, state_key)
             existing = list(st.session_state[init_key])
             names = {f.get("field","").strip().lower() for f in existing}
-            for s in source:
-                if s["field"].strip().lower() not in names:
-                    existing.append(dict(s))
+            for sx in source:
+                if sx["field"].strip().lower() not in names:
+                    existing.append(dict(sx))
             st.session_state[init_key] = existing
             st.session_state[state_key]["fields"] = existing
             _reset_editor_state(f"editor_{state_key}")
@@ -487,9 +413,8 @@ def render_form():
 
     # E. Approvals
     with tabs[4]:
-        _intro("""<b>Approval workflow</b> — every brand has different rules for when an opportunity needs approval
-        (deal value, discount, special pricing, credit). Define stages, approvers, triggers, SLAs, and whether a stage
-        can be reverted. Zoho turns this into the actual workflow rules; missing data here is the #1 cause of delayed go-lives.""")
+        _intro("""<b>Approval workflow</b> — every brand has different rules. Define stages, approvers, triggers, SLAs.
+        Missing data here is the #1 cause of delayed go-lives.""")
         appr_init = "init_sec_approvals"; appr_edit = "editor_approvals"
         cid_marker = f"_init_cid_{appr_init}"
         if appr_init not in st.session_state or st.session_state.get(cid_marker) != st.session_state.contributor_id:
@@ -531,9 +456,8 @@ def render_form():
 
     # F. Dashboards
     with tabs[5]:
-        _intro("""<b>Dashboards & reports</b> — the views people actually look at every day.
-        List every dashboard the team needs (Pipeline by stage, Renewal vs Net New, Forecast, Margin %, etc.),
-        who watches it, and how often. <b>Without dashboards listed, Zoho cannot validate the data model supports reporting</b>.""")
+        _intro("""<b>Dashboards & reports</b> — the views people look at every day.
+        List every dashboard, who watches it, how often. <b>Without dashboards listed, Zoho cannot validate reporting.</b>""")
         dash_init = "init_sec_dashboards"; dash_edit = "editor_dash"
         cid_marker_d = f"_init_cid_{dash_init}"
         if dash_init not in st.session_state or st.session_state.get(cid_marker_d) != st.session_state.contributor_id:
@@ -572,21 +496,18 @@ def render_form():
 
     # G. Best Practices
     with tabs[6]:
-        _intro("""<b>Best-practice inputs</b> — captured as recommendations the Zoho team should keep in mind, not for deep config in v1.
-        Note your data-hygiene asks (dedup rules, mandatory enforcement, naming conventions), the integrations you'll want eventually,
-        and SOPs that need to be documented post-rollout.""")
+        _intro("""<b>Best-practice inputs</b> — recommendations for the Zoho team. Not for deep config in v1.""")
         s = st.session_state.sec_best_practices
         s["data_hygiene"]          = st.text_area("Data-hygiene asks (dedup, mandatory rules, naming)", value=s.get("data_hygiene", ""), height=110)
         s["integrations_wishlist"] = st.text_area("Integrations wishlist (Zoho ↔ ERP / Outlook / Teams / vendor portals)", value=s.get("integrations_wishlist", ""), height=110)
-        s["dedup_sops"]            = st.text_area("SOPs to document later (lead→opp, partner onboarding, customer creation)", value=s.get("dedup_sops", ""), height=110)
+        s["dedup_sops"]            = st.text_area("SOPs to document later", value=s.get("dedup_sops", ""), height=110)
         with st.expander("💡 Common additional clauses (copy/paste if relevant)"):
             for c in sg.ADDITIONAL_CLAUSE_SUGGESTIONS:
                 st.markdown(f"- {c}")
 
     # H. Open Notes
     with tabs[7]:
-        _intro("""<b>Open notes</b> — the qualitative side. Pain points with the current tool are gold for Zoho;
-        they tell the team what NOT to repeat. Must-haves, nice-to-haves, risks, and direct questions for the implementation team also go here.""")
+        _intro("""<b>Open notes</b> — the qualitative side. Pain points are gold for Zoho — they tell the team what NOT to repeat.""")
         s = st.session_state.sec_open_notes
         c1, c2 = st.columns(2)
         with c1:
@@ -602,27 +523,25 @@ def render_form():
     with save:
         if st.button("💾 Save & Submit", type="primary", use_container_width=True):
             try:
+                filled = []
                 for sec_key, state_key in SECTION_STATE_KEYS.items():
-                    db.save_response(st.session_state.contributor_id, sec_key, st.session_state.get(state_key) or {})
-                st.session_state["_last_force_save"] = True
-                st.success("✅ Saved. You can keep editing — your email is the key, just come back anytime.")
+                    payload = st.session_state.get(state_key) or {}
+                    db.save_response(st.session_state.contributor_id, sec_key, payload)
+                    if A._section_filled(payload, sec_key): filled.append(sec_key)
+                audit.log("submit", contributor_id=st.session_state.contributor_id, sections_filled=len(filled))
+                st.success("✅ Saved. Use the same email to come back anytime.")
             except Exception as e:
                 st.error(f"Save failed: {e}")
     with info:
-        st.info("💡 Auto-save runs on every change. The big button above just confirms the final submit.")
+        st.info("💡 Auto-save runs on every change. Use the **same email** later to resume. Multiple roles per brand contribute — answers merge into one report.")
 
-    # ----- AUTOSAVE: persist changed sections every rerun -----
     _autosave_form()
 
 
-import copy as _copy
-
 def _autosave_form():
-    """Save any section whose payload has changed since the last save. Runs on every rerun."""
     cid = st.session_state.get("contributor_id")
     if not cid:
         return
-    # Reset saved-tracker if the contributor changed (resume flow)
     if st.session_state.get("_autosave_cid") != cid:
         st.session_state["_autosave_cid"] = cid
         for sk in SECTION_STATE_KEYS:
@@ -637,290 +556,538 @@ def _autosave_form():
                 db.save_response(cid, sec_key, payload)
                 st.session_state[f"_saved_{sec_key}"] = _copy.deepcopy(payload)
                 saved.append(sec_key)
+                audit.log("autosave", contributor_id=cid, section_key=sec_key,
+                          fields_count=len((payload or {}).get("fields", []) or []))
             except Exception as e:
-                # Store the error but don't crash the UI
                 st.session_state["_autosave_last_error"] = str(e)
     if saved:
-        st.toast(f"💾 Auto-saved {len(saved)} section(s)", icon="✅")
+        try: st.toast(f"💾 Auto-saved {len(saved)} section(s)", icon="✅")
+        except Exception: pass
 
 
-# =====================================================================
-# Page 3 — Admin
-# =====================================================================
+# ============================================================
+# Page 3 — Admin (multi-page)
+# ============================================================
+
 def render_admin():
     if not st.session_state.admin_unlocked:
-        st.markdown("""
-<div class='hero' style='padding:22px 26px'>
-  <div class='kicker'>ADMIN DASHBOARD</div>
-  <h1 style='font-size:1.6rem; margin:4px 0 6px 0'>🔒 Brand Insights & Reports</h1>
-  <p>Per-brand KPIs, charts (fields per section, mandatory %, integration intensity, data-source mix, brand-readiness radar),
-  auto-detected conflicts between contributors, rules-based recommendations, and downloadable PDF / Word / CSV requirement packs.
-  Cross-brand comparison is in the second tab.</p>
-</div>
-""", unsafe_allow_html=True)
+        _hero("ADMIN", "🔒 Admin Console", "Per-brand dashboard, cross-brand comparison, analytics, brand management, bulk import and the audit log.")
         with st.container(border=True):
             st.markdown("Enter the admin passcode to unlock the dashboard.")
             pc = st.text_input("Admin passcode", type="password")
             if st.button("Unlock", type="primary"):
                 if pc == config.ADMIN_PASSCODE:
-                    st.session_state.admin_unlocked = True; st.rerun()
+                    st.session_state.admin_unlocked = True
+                    audit.log("admin_unlock", success=True)
+                    st.rerun()
                 else:
+                    audit.log("admin_unlock", success=False)
                     st.error("Wrong passcode.")
         return
 
-    st.markdown("""
-<div class='hero' style='padding:22px 26px'>
-  <div class='kicker'>ADMIN DASHBOARD</div>
-  <h1 style='font-size:1.6rem; margin:4px 0 6px 0'>🔒 Brand Insights & Reports</h1>
-  <p>Pick a brand below to see live metrics, charts, conflicts, and recommendations — and download the branded handover pack.</p>
-</div>
-""", unsafe_allow_html=True)
+    _hero("ADMIN CONSOLE", "🔒 Brand Insights & Tools",
+          "All admin tools in one place. Pick a tab.")
 
-    tab_brand, tab_compare, tab_diag = st.tabs(["📊 Brand Dashboard", "🔄 Cross-Brand Comparison", "🩺 Diagnostics"])
+    tabs = st.tabs([
+        "📊 Brand Dashboard", "🔄 Cross-Brand", "📈 Analytics",
+        "🩺 Diagnostics", "🏷️ Brands", "📥 Bulk Import", "🛡️ Audit Log",
+    ])
 
-    # ---------- Brand Dashboard ----------
-    with tab_brand:
-        brand = st.selectbox("Brand", config.BRANDS)
-        try:
-            bundle = db.get_brand_bundle(brand)
-        except Exception as e:
-            st.error(f"DB error: {e}"); return
-        metrics    = A.compute_metrics(bundle)
-        conflicts  = A.detect_conflicts(bundle)
-        recs       = A.generate_recommendations(bundle, metrics, conflicts)
+    with tabs[0]: _admin_brand_dashboard()
+    with tabs[1]: _admin_cross_brand()
+    with tabs[2]: _admin_analytics()
+    with tabs[3]: _admin_diagnostics()
+    with tabs[4]: _admin_brands()
+    with tabs[5]: _admin_bulk_import()
+    with tabs[6]: _admin_audit_log()
 
-        st.subheader(f"Brand — {brand}")
-        st.caption(f"Generated {bundle['generated_at']} · {len(bundle['contributors'])} contributor(s)")
 
-        # KPI strip — 6 metrics
-        c1, c2, c3, c4, c5, c6 = st.columns(6)
-        c1.metric("👥 Contributors",    metrics["contributors"])
-        c2.metric("🧱 Fields",          metrics["total_fields"])
-        c3.metric("✅ Mandatory",       f"{metrics['mandatory_pct']}%")
-        c4.metric("🔌 Integration",     f"{metrics['integration_pct']}%")
-        c5.metric("🔁 Approvals",       metrics["approval_stages"])
-        c6.metric("📊 Dashboards",      metrics["dashboards"])
+def _admin_brand_dashboard():
+    brand_names = db.brand_names(active_only=False) or config.BRANDS
+    brand = st.selectbox("Brand", brand_names, key="brand_dash_select")
+    try:
+        bundle = db.get_brand_bundle(brand)
+    except Exception as e:
+        st.error(f"DB error: {e}"); return
+    metrics   = A.compute_metrics(bundle)
+    conflicts = A.detect_conflicts(bundle)
+    recs      = A.generate_recommendations(bundle, metrics, conflicts)
 
-        st.progress(metrics["completion_pct"] / 100, text=f"Section completion: {metrics['completion_pct']}%   ·   Brand readiness: {A.overall_readiness_pct(metrics):.0f}/100")
+    st.subheader(f"🏷️ {brand}")
+    st.caption(f"Generated {bundle['generated_at']}")
 
-        if not bundle["contributors"]:
-            st.warning("No contributors yet for this brand."); return
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("👥 Contributors", metrics["contributors"])
+    c2.metric("🧱 Fields",         metrics["total_fields"])
+    c3.metric("✅ Mandatory",      f"{metrics['mandatory_pct']}%")
+    c4.metric("🔌 Integration",    f"{metrics['integration_pct']}%")
+    c5.metric("🔁 Approvals",      metrics["approval_stages"])
+    c6.metric("📊 Dashboards",     metrics["dashboards"])
 
-        # Row 1 charts: fields per section + mandatory %
-        cc1, cc2 = st.columns(2)
-        with cc1:
-            data = A.fields_per_section_count(bundle)
-            df = pd.DataFrame({"Section": list(data.keys()), "Fields": list(data.values())})
-            fig = px.bar(df, x="Section", y="Fields", color_discrete_sequence=["#C8102E"], title="Fields proposed per section")
-            fig.update_layout(height=320, margin=dict(l=0,r=0,t=40,b=0), plot_bgcolor="white")
-            st.plotly_chart(fig, use_container_width=True)
-        with cc2:
-            data = A.mandatory_per_section_pct(bundle)
-            df = pd.DataFrame({"Section": list(data.keys()), "Mandatory %": list(data.values())})
-            fig = px.bar(df, x="Mandatory %", y="Section", orientation="h", color_discrete_sequence=["#1A1A1A"], title="Mandatory % per section")
-            fig.update_layout(height=320, margin=dict(l=0,r=0,t=40,b=0), plot_bgcolor="white", xaxis_range=[0,100])
-            st.plotly_chart(fig, use_container_width=True)
+    st.progress(metrics["completion_pct"] / 100,
+                text=f"Section completion: {metrics['completion_pct']}%   ·   Brand readiness: {A.overall_readiness_pct(metrics):.0f}/100")
 
-        # Row 2: integration % + source breakdown + readiness radar
-        cc1, cc2, cc3 = st.columns([1, 1, 1])
-        with cc1:
-            data = A.integration_per_section_pct(bundle)
-            df = pd.DataFrame({"Section": list(data.keys()), "Integration %": list(data.values())})
-            fig = px.bar(df, x="Integration %", y="Section", orientation="h", color_discrete_sequence=["#0F4C81"], title="Integration intensity per section")
-            fig.update_layout(height=340, margin=dict(l=0,r=0,t=40,b=0), plot_bgcolor="white", xaxis_range=[0,100])
-            st.plotly_chart(fig, use_container_width=True)
-        with cc2:
-            data = A.data_source_breakdown(bundle) or {"No data": 1}
-            df = pd.DataFrame({"Source": list(data.keys()), "Count": list(data.values())})
-            fig = px.pie(df, names="Source", values="Count", hole=.5,
-                         color_discrete_sequence=["#C8102E","#1A1A1A","#0F4C81","#E07B00","#2E7D32","#6A1B9A","#888888","#5D4037"],
-                         title="Data-capture source mix")
-            fig.update_layout(height=340, margin=dict(l=0,r=0,t=40,b=0))
-            st.plotly_chart(fig, use_container_width=True)
-        with cc3:
-            scores = A.readiness_scores(metrics)
-            fig = go.Figure()
-            fig.add_trace(go.Scatterpolar(
-                r=list(scores.values()) + [list(scores.values())[0]],
-                theta=list(scores.keys()) + [list(scores.keys())[0]],
-                fill="toself", line_color="#C8102E", fillcolor="rgba(200,16,46,0.20)", name="Readiness",
-            ))
-            fig.update_layout(
-                polar=dict(radialaxis=dict(range=[0, 100], visible=True)),
-                showlegend=False, height=340, margin=dict(l=20,r=20,t=40,b=20),
+    if not bundle["contributors"]:
+        st.warning("No contributors yet for this brand."); return
+
+    # Row 1: fields per section + mandatory %
+    cc1, cc2 = st.columns(2)
+    with cc1:
+        data = A.fields_per_section_count(bundle)
+        df = pd.DataFrame({"Section": list(data.keys()), "Fields": list(data.values())})
+        fig = px.bar(df, x="Section", y="Fields", color_discrete_sequence=[theme.COLORS["accent"]], title="Fields proposed per section")
+        fig.update_layout(**_plotly_layout(height=320))
+        st.plotly_chart(fig, use_container_width=True)
+    with cc2:
+        data = A.mandatory_per_section_pct(bundle)
+        df = pd.DataFrame({"Section": list(data.keys()), "Mandatory %": list(data.values())})
+        fig = px.bar(df, x="Mandatory %", y="Section", orientation="h",
+                     color_discrete_sequence=[theme.COLORS["accent_2"]], title="Mandatory % per section")
+        fig.update_layout(**_plotly_layout(height=320, xaxis_range=[0, 100]))
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Row 2: integration %, source mix, readiness radar
+    cc1, cc2, cc3 = st.columns(3)
+    with cc1:
+        data = A.integration_per_section_pct(bundle)
+        df = pd.DataFrame({"Section": list(data.keys()), "Integration %": list(data.values())})
+        fig = px.bar(df, x="Integration %", y="Section", orientation="h",
+                     color_discrete_sequence=[theme.COLORS["gold"]], title="Integration intensity")
+        fig.update_layout(**_plotly_layout(height=340, xaxis_range=[0, 100]))
+        st.plotly_chart(fig, use_container_width=True)
+    with cc2:
+        data = A.data_source_breakdown(bundle) or {"No data": 1}
+        df = pd.DataFrame({"Source": list(data.keys()), "Count": list(data.values())})
+        fig = px.pie(df, names="Source", values="Count", hole=.55,
+                     color_discrete_sequence=theme.CHART_PALETTE, title="Data-capture source mix")
+        fig.update_layout(**_plotly_layout(height=340))
+        st.plotly_chart(fig, use_container_width=True)
+    with cc3:
+        scores = A.readiness_scores(metrics)
+        fig = go.Figure()
+        fig.add_trace(go.Scatterpolar(
+            r=list(scores.values()) + [list(scores.values())[0]],
+            theta=list(scores.keys()) + [list(scores.keys())[0]],
+            fill="toself", line_color=theme.COLORS["accent"],
+            fillcolor="rgba(0,229,255,0.20)", name="Readiness",
+        ))
+        fig.update_layout(
+            **_plotly_layout(
+                height=340,
                 title=f"Brand readiness — {A.overall_readiness_pct(metrics):.0f}/100",
+                polar=dict(bgcolor=theme.COLORS["surface"],
+                           radialaxis=dict(range=[0, 100], visible=True, gridcolor=theme.COLORS["border"], color=theme.COLORS["ink_dim"]),
+                           angularaxis=dict(gridcolor=theme.COLORS["border"], color=theme.COLORS["ink_dim"])),
+                showlegend=False,
             )
-            st.plotly_chart(fig, use_container_width=True)
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
-        # Conflicts + Recommendations side-by-side
+    # Conflicts + Recommendations
+    cc1, cc2 = st.columns(2)
+    with cc1:
+        st.markdown("### 🚨 Conflicts to resolve")
+        st.caption("Mandatory / integration / source / SLA disagreements between contributors.")
+        if conflicts:
+            st.dataframe(pd.DataFrame(conflicts), use_container_width=True, hide_index=True)
+        else:
+            st.success("No conflicts detected.")
+    with cc2:
+        st.markdown("### 💡 Insights & Recommendations")
+        if recs:
+            rdf = pd.DataFrame(recs)
+            st.dataframe(rdf, use_container_width=True, hide_index=True)
+
+    # Contributors
+    st.markdown("### 👥 Contributors")
+    cdf = pd.DataFrame([{
+        "Name": c["name"], "Role": c["role"], "Email": c["email"],
+        "Last update": c["submitted_at"][:19].replace("T"," "),
+    } for c in bundle["contributors"]])
+    st.dataframe(cdf, use_container_width=True, hide_index=True)
+
+    # Downloads
+    st.markdown("### 📥 Download requirements pack")
+    d1, d2, d3 = st.columns(3)
+    with d1:
+        if st.download_button("⬇️ PDF",  data=reports.build_pdf(bundle),
+                              file_name=f"Redington_Discovery_{brand}.pdf",  mime="application/pdf", use_container_width=True):
+            audit.log("report_downloaded", brand=brand, format="pdf")
+    with d2:
+        if st.download_button("⬇️ Word", data=reports.build_docx(bundle),
+                              file_name=f"Redington_Discovery_{brand}.docx",
+                              mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True):
+            audit.log("report_downloaded", brand=brand, format="docx")
+    with d3:
+        if st.download_button("⬇️ CSV",  data=reports.build_csv(bundle),
+                              file_name=f"Redington_Discovery_{brand}.csv",  mime="text/csv", use_container_width=True):
+            audit.log("report_downloaded", brand=brand, format="csv")
+
+    # Inline preview
+    st.markdown("### 🔍 Inline view of merged inputs")
+    for sec_key, sec_title in reports.SECTIONS:
+        with st.expander(sec_title, expanded=False):
+            any_data = False
+            for c in bundle["contributors"]:
+                payload = bundle["responses_by_contributor"].get(c["id"], {}).get(sec_key)
+                if not payload: continue
+                any_data = True
+                st.markdown(f"**From {c['name']} ({c['role']})**")
+                if sec_key in reports.FIELD_BUILDER_SECTIONS:
+                    rows = payload.get("fields", []) or []
+                    if rows: st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                    if payload.get("notes"): st.caption(f"Notes: {payload['notes']}")
+                elif sec_key == "approvals":
+                    rows = payload.get("stages", []) or []
+                    if rows: st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                    if payload.get("escalation"): st.caption(f"Escalation: {payload['escalation']}")
+                    if payload.get("notes"): st.caption(f"Notes: {payload['notes']}")
+                elif sec_key == "dashboards":
+                    rows = payload.get("dashboards", []) or []
+                    if rows: st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                    if payload.get("notes"): st.caption(f"Notes: {payload['notes']}")
+                else:
+                    for k, v in payload.items():
+                        if v: st.markdown(f"- **{k.replace('_',' ').title()}:** {v}")
+                st.markdown("---")
+            if not any_data:
+                st.caption("_No input captured yet._")
+
+
+def _admin_cross_brand():
+    st.subheader("🔄 Cross-brand comparison")
+    st.caption("Side-by-side view across every brand.")
+    brand_names = db.brand_names(active_only=False) or config.BRANDS
+    bundles = []
+    for b in brand_names:
+        try: bundles.append(db.get_brand_bundle(b))
+        except Exception: pass
+    rows = []
+    for b in bundles:
+        m = A.compute_metrics(b)
+        rows.append({"Brand": b["brand"], "Contributors": m["contributors"], "Fields": m["total_fields"],
+                     "Mandatory %": m["mandatory_pct"], "Integration %": m["integration_pct"],
+                     "Approvals": m["approval_stages"], "Dashboards": m["dashboards"],
+                     "Completion %": m["completion_pct"], "Readiness /100": A.overall_readiness_pct(m)})
+    cdf = pd.DataFrame(rows)
+    st.dataframe(cdf, use_container_width=True, hide_index=True)
+
+    if not cdf.empty:
+        fig = px.bar(cdf, x="Brand", y=["Contributors","Fields","Approvals","Dashboards"], barmode="group",
+                     title="Brand-by-brand totals",
+                     color_discrete_sequence=theme.CHART_PALETTE)
+        fig.update_layout(**_plotly_layout(height=380))
+        st.plotly_chart(fig, use_container_width=True)
+
         cc1, cc2 = st.columns(2)
         with cc1:
-            st.markdown("### 🚨 Conflicts to resolve")
-            st.caption("Where contributors disagree on mandatory, integration, source, or SLA.")
-            if conflicts:
-                st.dataframe(pd.DataFrame(conflicts), use_container_width=True, hide_index=True)
-            else:
-                st.success("No conflicts detected between contributors.")
+            fig2 = px.bar(cdf, x="Brand", y="Completion %", color_discrete_sequence=[theme.COLORS["accent"]], title="Section-completion %")
+            fig2.update_layout(**_plotly_layout(height=320, yaxis_range=[0,100]))
+            st.plotly_chart(fig2, use_container_width=True)
         with cc2:
-            st.markdown("### 💡 Insights & Recommendations")
-            st.caption("Auto-generated. Color-coded by priority.")
-            if recs:
-                rdf = pd.DataFrame(recs)
-                color_map = {"High":"#FCE3E6","Medium":"#FFF4E0","Low":"#E8F4FD","Info":"#EAF7EE"}
-                styled = rdf.style.apply(lambda r: [f"background-color: {color_map.get(r['priority'], '#FFF')}"] * len(r), axis=1)
-                st.dataframe(styled, use_container_width=True, hide_index=True)
+            fig3 = px.bar(cdf, x="Brand", y="Readiness /100", color_discrete_sequence=[theme.COLORS["accent_2"]], title="Brand readiness score")
+            fig3.update_layout(**_plotly_layout(height=320, yaxis_range=[0,100]))
+            st.plotly_chart(fig3, use_container_width=True)
 
-        # Contributors
-        st.markdown("### 👥 Contributors")
-        cdf = pd.DataFrame([{
-            "Name": c["name"], "Role": c["role"], "Email": c["email"],
-            "Last update": c["submitted_at"][:19].replace("T"," "),
-        } for c in bundle["contributors"]])
-        st.dataframe(cdf, use_container_width=True, hide_index=True)
-
-        # Downloads
-        st.markdown("### 📥 Download requirements pack")
-        st.caption("Polished PDF (cover, KPIs, charts, conflicts, recommendations, full detail) · editable Word · long-format CSV.")
-        d1, d2, d3 = st.columns(3)
-        with d1:
-            st.download_button("⬇️ PDF",  data=reports.build_pdf(bundle),  file_name=f"Redington_Discovery_{brand}.pdf",  mime="application/pdf",  use_container_width=True)
-        with d2:
-            st.download_button("⬇️ Word", data=reports.build_docx(bundle), file_name=f"Redington_Discovery_{brand}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
-        with d3:
-            st.download_button("⬇️ CSV",  data=reports.build_csv(bundle),  file_name=f"Redington_Discovery_{brand}.csv",  mime="text/csv",         use_container_width=True)
-
-        # Inline preview
-        st.markdown("### 🔍 Inline view of merged inputs")
-        for sec_key, sec_title in reports.SECTIONS:
-            with st.expander(sec_title, expanded=False):
-                any_data = False
-                for c in bundle["contributors"]:
-                    payload = bundle["responses_by_contributor"].get(c["id"], {}).get(sec_key)
-                    if not payload: continue
-                    any_data = True
-                    st.markdown(f"**From {c['name']} ({c['role']})**")
-                    if sec_key in reports.FIELD_BUILDER_SECTIONS:
-                        rows = payload.get("fields", []) or []
-                        if rows: st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-                        if payload.get("notes"): st.caption(f"Notes: {payload['notes']}")
-                    elif sec_key == "approvals":
-                        rows = payload.get("stages", []) or []
-                        if rows: st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-                        if payload.get("escalation"): st.caption(f"Escalation: {payload['escalation']}")
-                        if payload.get("notes"): st.caption(f"Notes: {payload['notes']}")
-                    elif sec_key == "dashboards":
-                        rows = payload.get("dashboards", []) or []
-                        if rows: st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-                        if payload.get("notes"): st.caption(f"Notes: {payload['notes']}")
-                    else:
-                        for k, v in payload.items():
-                            if v: st.markdown(f"- **{k.replace('_',' ').title()}:** {v}")
-                    st.markdown("---")
-                if not any_data:
-                    st.caption("_No input captured yet._")
-
-    # ---------- Cross-brand comparison ----------
-    with tab_compare:
-        st.subheader("🔄 Cross-brand comparison")
-        st.caption("Side-by-side view across every brand to spot alignment and divergence.")
-        bundles = []
-        for b in config.BRANDS:
-            try: bundles.append(db.get_brand_bundle(b))
-            except Exception: pass
-        rows = []
+        radar = go.Figure()
         for b in bundles:
-            m = A.compute_metrics(b)
-            rows.append({"Brand": b["brand"], "Contributors": m["contributors"], "Fields": m["total_fields"],
-                         "Mandatory %": m["mandatory_pct"], "Integration %": m["integration_pct"],
-                         "Approvals": m["approval_stages"], "Dashboards": m["dashboards"],
-                         "Completion %": m["completion_pct"],
-                         "Readiness /100": A.overall_readiness_pct(m)})
-        cdf = pd.DataFrame(rows)
-        st.dataframe(cdf, use_container_width=True, hide_index=True)
-
-        if not cdf.empty:
-            fig = px.bar(cdf, x="Brand", y=["Contributors","Fields","Approvals","Dashboards"], barmode="group",
-                         title="Brand-by-brand totals",
-                         color_discrete_sequence=["#C8102E", "#1A1A1A", "#0F4C81", "#E07B00"])
-            fig.update_layout(height=380, margin=dict(l=0,r=0,t=40,b=0), plot_bgcolor="white")
-            st.plotly_chart(fig, use_container_width=True)
-
-            cc1, cc2 = st.columns(2)
-            with cc1:
-                fig2 = px.bar(cdf, x="Brand", y="Completion %", color_discrete_sequence=["#C8102E"], title="Section-completion %")
-                fig2.update_layout(height=320, margin=dict(l=0,r=0,t=40,b=0), yaxis_range=[0,100], plot_bgcolor="white")
-                st.plotly_chart(fig2, use_container_width=True)
-            with cc2:
-                fig3 = px.bar(cdf, x="Brand", y="Readiness /100", color_discrete_sequence=["#0F4C81"], title="Brand readiness score")
-                fig3.update_layout(height=320, margin=dict(l=0,r=0,t=40,b=0), yaxis_range=[0,100], plot_bgcolor="white")
-                st.plotly_chart(fig3, use_container_width=True)
-
-            # Cross-brand readiness radar
-            radar = go.Figure()
-            for b in bundles:
-                m = A.compute_metrics(b); s = A.readiness_scores(m)
-                radar.add_trace(go.Scatterpolar(
-                    r=list(s.values()) + [list(s.values())[0]],
-                    theta=list(s.keys()) + [list(s.keys())[0]],
-                    fill="toself", name=b["brand"], opacity=0.5,
-                ))
-            radar.update_layout(
-                polar=dict(radialaxis=dict(range=[0, 100], visible=True)),
-                title="Cross-brand readiness radar", height=440, margin=dict(l=20,r=20,t=40,b=20),
+            m = A.compute_metrics(b); s = A.readiness_scores(m)
+            radar.add_trace(go.Scatterpolar(
+                r=list(s.values()) + [list(s.values())[0]],
+                theta=list(s.keys()) + [list(s.keys())[0]],
+                fill="toself", name=b["brand"], opacity=0.55,
+            ))
+        radar.update_layout(
+            **_plotly_layout(
+                height=440, title="Cross-brand readiness radar",
+                polar=dict(bgcolor=theme.COLORS["surface"],
+                           radialaxis=dict(range=[0, 100], visible=True, gridcolor=theme.COLORS["border"], color=theme.COLORS["ink_dim"]),
+                           angularaxis=dict(gridcolor=theme.COLORS["border"], color=theme.COLORS["ink_dim"])),
             )
-            st.plotly_chart(radar, use_container_width=True)
-
-        st.download_button(
-            "⬇️ Download cross-brand CSV",
-            data=reports.build_cross_brand_csv(bundles),
-            file_name="Redington_Discovery_AllBrands.csv", mime="text/csv",
         )
+        st.plotly_chart(radar, use_container_width=True)
 
-    # ---------- Diagnostics ----------
-    with tab_diag:
-        st.subheader("🩺 Diagnostics — every contributor across every brand")
-        st.caption("Shows who started a session, what brand they picked, and whether each section actually has data saved. Use this to spot incomplete submissions.")
+    if st.download_button("⬇️ Download cross-brand CSV", data=reports.build_cross_brand_csv(bundles),
+                          file_name="Redington_Discovery_AllBrands.csv", mime="text/csv"):
+        audit.log("cross_brand_export", brands_count=len(bundles))
+
+
+def _admin_analytics():
+    st.subheader("📈 Analytics")
+    st.caption("Velocity, role contribution, gap analysis, and time-to-completion.")
+
+    brand_names = db.brand_names(active_only=False) or config.BRANDS
+    bundles = []
+    for b in brand_names:
+        try: bundles.append(db.get_brand_bundle(b))
+        except Exception: pass
+
+    try:
+        audit_rows = audit.list_recent(limit=2000)
+    except Exception:
+        audit_rows = []
+
+    # KPI strip
+    total_contrib = sum(len(b["contributors"]) for b in bundles)
+    total_fields  = sum(A.compute_metrics(b)["total_fields"] for b in bundles)
+    health = A.cross_brand_health_score(bundles)
+    avg_health = round(sum(h["health"] for h in health) / len(health), 1) if health else 0.0
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("👥 Total contributors", total_contrib)
+    k2.metric("🧱 Total fields",       total_fields)
+    k3.metric("📈 Avg readiness",      f"{avg_health}/100")
+    k4.metric("🛡️ Audit events",       len(audit_rows))
+
+    # Velocity (daily activity)
+    daily = A.daily_activity_series(audit_rows)
+    if daily:
+        dfd = pd.DataFrame(daily)
+        fig = px.line(dfd, x="day", y=["sessions", "autosaves", "downloads"],
+                      title="Daily activity (audit log)", markers=True,
+                      color_discrete_sequence=theme.CHART_PALETTE)
+        fig.update_layout(**_plotly_layout(height=340))
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No audit events yet. Start a session, save a section, or download a report — events will populate here.")
+
+    # Per-brand views
+    pick = st.selectbox("Brand for drill-down", brand_names, key="analytics_brand_select")
+    bundle = next((b for b in bundles if b["brand"] == pick), None)
+    if not bundle: st.warning("Select a brand."); return
+
+    # Role × Section heatmap
+    rcm = A.role_contribution_matrix(bundle)
+    if rcm:
+        dfr = pd.DataFrame(rcm).pivot_table(index="role", columns="section", values="fields", aggfunc="sum", fill_value=0)
+        fig = go.Figure(data=go.Heatmap(
+            z=dfr.values, x=dfr.columns.tolist(), y=dfr.index.tolist(),
+            colorscale=[[0, theme.COLORS["surface_2"]], [0.5, theme.COLORS["accent_2"]], [1, theme.COLORS["accent"]]],
+            colorbar=dict(title="Fields"),
+        ))
+        fig.update_layout(**_plotly_layout(height=340, title=f"Role × Section heatmap — {pick}"))
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Gap analysis
+    gaps = A.gap_analysis(bundle)
+    if gaps:
+        gdf = pd.DataFrame(gaps)
+        fig = px.bar(gdf, x="section", y=["proposed", "floor"], barmode="group",
+                     title=f"Gap analysis — {pick}",
+                     color_discrete_sequence=[theme.COLORS["accent"], theme.COLORS["ink_dim"]])
+        fig.update_layout(**_plotly_layout(height=320))
+        st.plotly_chart(fig, use_container_width=True)
+        bad = [g for g in gaps if g["status"] in ("Missing", "Under-spec", "Empty")]
+        if bad:
+            st.warning(f"⚠️ {len(bad)} section(s) under target floor.")
+            st.dataframe(pd.DataFrame(bad), use_container_width=True, hide_index=True)
+
+    # Time-to-completion
+    ttc = A.time_to_completion(bundle, audit_rows=audit_rows)
+    if ttc:
+        ttcdf = pd.DataFrame(ttc)
+        fig = px.bar(ttcdf, x="name", y="minutes", color="role",
+                     title=f"Time-to-completion (minutes) — {pick}",
+                     color_discrete_sequence=theme.CHART_PALETTE)
+        fig.update_layout(**_plotly_layout(height=320))
+        st.plotly_chart(fig, use_container_width=True)
+
+
+def _admin_diagnostics():
+    st.subheader("🩺 Diagnostics — every contributor across every brand")
+    st.caption("Shows who started a session and whether each section has data saved.")
+    try:
+        all_contribs = db.list_contributors()
+    except Exception as e:
+        st.error(f"DB error: {e}"); return
+
+    if not all_contribs:
+        st.info("No contributors in the database yet.")
+        return
+
+    diag_rows = []
+    for c in all_contribs:
+        try: resp = db.get_responses_for_contributor(c["id"])
+        except Exception: resp = {}
+        filled, empty = [], []
+        for sk in A.ALL_SECTION_KEYS:
+            payload = resp.get(sk, {}) or {}
+            (filled if A._section_filled(payload, sk) else empty).append(sk)
+        diag_rows.append({
+            "Brand": c["brand"], "Name": c["name"], "Email": c["email"], "Role": c["role"],
+            "Last update": c["submitted_at"][:19].replace("T"," "),
+            "Sections filled": len(filled), "Sections total": len(A.ALL_SECTION_KEYS),
+            "Status": "✅ Has data" if filled else "⚠️ Empty",
+            "Empty sections": ", ".join(empty) if empty else "—",
+        })
+    diag_df = pd.DataFrame(diag_rows).sort_values(["Brand", "Last update"], ascending=[True, False])
+    st.dataframe(diag_df, use_container_width=True, hide_index=True)
+
+    empties = [r for r in diag_rows if r["Status"].startswith("⚠️")]
+    if empties:
+        st.warning(f"⚠️ {len(empties)} contributor(s) with NO data. Ask them to re-open with the same email; autosave will persist this time.")
+
+
+def _admin_brands():
+    st.subheader("🏷️ Brands — manage what appears in the brand picker")
+    st.caption("Add a new brand (name + optional logo + optional starter template). Archive to remove from the picker without deleting historical data.")
+
+    try:
+        brands = db.list_brands(active_only=False)
+    except Exception as e:
+        st.error(f"DB error: {e}. Did you run schema_v3.sql?"); return
+
+    if not brands:
+        st.info("No brands in DB yet — add the first one below.")
+    else:
         try:
-            all_contribs = db.list_contributors()
+            counts = db.count_contributors_per_brand()
+        except Exception:
+            counts = {}
+        rows = [{
+            "Name": b["name"], "Slug": b.get("slug", ""),
+            "Active": "✅" if b.get("active") else "⛔",
+            "Logo": "🖼️" if b.get("logo_url") else "—",
+            "Contributors": counts.get(b["name"], 0),
+            "Created": (b.get("created_at") or "")[:19].replace("T", " "),
+        } for b in brands]
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+        cols = st.columns(2)
+        with cols[0]:
+            archive_pick = st.selectbox("Archive brand", [b["name"] for b in brands if b.get("active")] or ["(none active)"], key="archive_pick")
+            if st.button("⛔ Archive selected"):
+                target = next((b for b in brands if b["name"] == archive_pick), None)
+                if target and target.get("id"):
+                    db.archive_brand(target["id"])
+                    audit.log("brand_archived", brand_name=archive_pick)
+                    st.success(f"Archived {archive_pick}"); st.rerun()
+        with cols[1]:
+            unarchive_pick = st.selectbox("Unarchive brand", [b["name"] for b in brands if not b.get("active")] or ["(none archived)"], key="unarchive_pick")
+            if st.button("♻️ Unarchive selected"):
+                target = next((b for b in brands if b["name"] == unarchive_pick), None)
+                if target and target.get("id"):
+                    db.unarchive_brand(target["id"])
+                    audit.log("brand_unarchived", brand_name=unarchive_pick)
+                    st.success(f"Unarchived {unarchive_pick}"); st.rerun()
+
+    st.markdown("---")
+    st.markdown("#### ➕ Add a new brand")
+    with st.form("add_brand_form", clear_on_submit=True):
+        name = st.text_input("Brand name", placeholder="e.g. Google Cloud, Oracle, VMware")
+        logo = st.text_input("Logo URL (optional)", placeholder="https://...")
+        starter_raw = st.text_area("Starter template (optional JSON) — paste a {section: [field rows]} object", height=160,
+                                   placeholder='{"partner_360":[{"field":"Partner Name","type":"Text","mandatory":true}]}')
+        submit = st.form_submit_button("Add brand", type="primary")
+        if submit:
+            if not name.strip():
+                st.error("Brand name is required.")
+            else:
+                starter = None
+                if starter_raw.strip():
+                    try:
+                        starter = json.loads(starter_raw)
+                    except Exception as e:
+                        st.error(f"Starter template is not valid JSON: {e}")
+                        return
+                try:
+                    row = db.add_brand(name.strip(), logo_url=logo.strip() or None,
+                                       starter_template=starter, created_by=st.session_state.get("email"))
+                    audit.log("brand_added", brand_name=name.strip(), has_logo=bool(logo.strip()), has_starter=bool(starter))
+                    st.success(f"✅ Added {row['name']}"); st.rerun()
+                except Exception as e:
+                    st.error(f"Add failed: {e}")
+
+
+def _admin_bulk_import():
+    st.subheader("📥 Bulk Excel import / export")
+    st.caption("Download a per-brand workbook, fill offline, upload back. The import is logged in the audit trail under the contributor email you enter on the Cover sheet.")
+
+    brand_names = db.brand_names(active_only=False) or config.BRANDS
+    brand = st.selectbox("Brand", brand_names, key="bulk_brand_select")
+
+    st.markdown("##### 1) Download template")
+    try:
+        tmpl = excel_io.download_template(brand)
+        st.download_button("⬇️ Download Excel template", data=tmpl,
+                           file_name=f"Redington_Discovery_Template_{brand}.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    except Exception as e:
+        st.error(f"Could not generate template: {e}")
+
+    st.markdown("##### 2) Upload filled template")
+    uploaded = st.file_uploader("Upload .xlsx", type=["xlsx"], key="bulk_upload")
+    if uploaded:
+        try:
+            parsed = excel_io.import_template(uploaded.read())
         except Exception as e:
-            st.error(f"DB error: {e}"); return
+            st.error(f"Could not parse the file: {e}"); return
 
-        if not all_contribs:
-            st.info("No contributors in the database yet.")
+        contrib = parsed.get("contributor", {})
+        sections = parsed.get("sections", {})
+        if not contrib.get("email"):
+            st.error("Cover sheet is missing Email — that's required.")
             return
+        st.success(f"Parsed ✅ — contributor {contrib.get('name','(no name)')} ({contrib.get('email')}, {contrib.get('role','Other')}), {len(sections)} section(s).")
 
-        diag_rows = []
-        for c in all_contribs:
+        # Preview
+        for sk, payload in sections.items():
+            with st.expander(f"Section preview — {sk}"):
+                if isinstance(payload, dict):
+                    if payload.get("fields"):     st.dataframe(pd.DataFrame(payload["fields"]),     use_container_width=True, hide_index=True)
+                    elif payload.get("stages"):    st.dataframe(pd.DataFrame(payload["stages"]),     use_container_width=True, hide_index=True)
+                    elif payload.get("dashboards"):st.dataframe(pd.DataFrame(payload["dashboards"]), use_container_width=True, hide_index=True)
+                    else:
+                        st.json(payload, expanded=False)
+
+        if st.button("✅ Apply import", type="primary"):
             try:
-                resp = db.get_responses_for_contributor(c["id"])
-            except Exception:
-                resp = {}
-            filled = []
-            empty = []
-            for sk in A.ALL_SECTION_KEYS:
-                payload = resp.get(sk, {}) or {}
-                if A._section_filled(payload, sk):
-                    filled.append(sk)
-                else:
-                    empty.append(sk)
-            diag_rows.append({
-                "Brand": c["brand"], "Name": c["name"], "Email": c["email"], "Role": c["role"],
-                "Last update": c["submitted_at"][:19].replace("T"," "),
-                "Sections filled": len(filled),
-                "Sections total": len(A.ALL_SECTION_KEYS),
-                "Status": "✅ Has data" if filled else "⚠️ Empty",
-                "Empty sections": ", ".join(empty) if empty else "—",
-            })
-        diag_df = pd.DataFrame(diag_rows).sort_values(["Brand", "Last update"], ascending=[True, False])
-        st.dataframe(diag_df, use_container_width=True, hide_index=True)
+                row = db.upsert_contributor(brand, contrib.get("name") or "Bulk Import",
+                                            contrib["email"], contrib.get("role") or "Other")
+                for sk, payload in sections.items():
+                    db.save_response(row["id"], sk, payload)
+                audit.log("bulk_import", brand=brand, contributor_id=row["id"],
+                          sections=list(sections.keys()), filename=uploaded.name)
+                st.success(f"✅ Imported {len(sections)} section(s) under {row['email']}")
+            except Exception as e:
+                st.error(f"Import failed: {e}")
 
-        empties = [r for r in diag_rows if r["Status"].startswith("⚠️")]
-        if empties:
-            st.warning(
-                f"⚠️ {len(empties)} contributor(s) have NO data saved yet. "
-                "If they think they submitted, the most likely cause was the old data-editor bug (now fixed by autosave). "
-                "Ask them to re-open the form with the same email — their session resumes — fill again, and the autosave will persist it."
-            )
+
+def _admin_audit_log():
+    st.subheader("🛡️ Audit Log")
+    st.caption("Every action with email + IP + timestamp. Filter, then export.")
+
+    f1, f2, f3, f4 = st.columns(4)
+    with f1:
+        event_filter = st.selectbox("Event", ["(all)", "session_start", "autosave", "submit",
+                                              "report_downloaded", "admin_unlock", "brand_added",
+                                              "brand_archived", "brand_unarchived", "bulk_import",
+                                              "cross_brand_export"])
+    with f2:
+        brand_filter = st.selectbox("Brand", ["(all)"] + (db.brand_names(active_only=False) or config.BRANDS), key="audit_brand")
+    with f3:
+        email_filter = st.text_input("Email contains")
+    with f4:
+        limit = st.number_input("Limit", min_value=50, max_value=5000, value=500, step=50)
+
+    filters = {}
+    if event_filter != "(all)": filters["event"] = event_filter
+    if brand_filter != "(all)": filters["brand"] = brand_filter
+    if email_filter.strip():     filters["email"] = email_filter.strip()
+
+    rows = audit.list_recent(limit=int(limit), filters=filters)
+    if not rows:
+        st.info("No audit events match.")
+        return
+
+    rdf = pd.DataFrame(rows)
+    # Compact view
+    show = rdf[["ts", "event", "actor_email", "actor_ip", "brand", "section_key", "detail"]].copy()
+    show["ts"] = show["ts"].str[:19].str.replace("T", " ")
+    show["detail"] = show["detail"].apply(lambda d: json.dumps(d, separators=(",", ":")) if d else "")
+    st.dataframe(show, use_container_width=True, hide_index=True, height=520)
+
+    csv = rdf.to_csv(index=False).encode("utf-8")
+    st.download_button("⬇️ Export filtered CSV", data=csv, file_name="audit_log.csv", mime="text/csv")
 
 
 # ---------- Router ----------

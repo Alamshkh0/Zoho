@@ -378,6 +378,111 @@ def chart_completion_donut_png(metrics: dict) -> bytes:
     return buf.getvalue()
 
 
+# ---------- NEW: extended analytics (v3) ----------
+
+def role_contribution_matrix(bundle: dict) -> "list[dict]":
+    """Rows shaped {role, section, fields} so it's easy to render as a Plotly heatmap."""
+    rows: list[dict] = []
+    contribs = {c["id"]: c for c in bundle["contributors"]}
+    for cid, sections in bundle["responses_by_contributor"].items():
+        role = contribs.get(cid, {}).get("role", "Unknown")
+        for sk in FIELD_BUILDER_SECTIONS:
+            payload = sections.get(sk) or {}
+            n_fields = len(payload.get("fields", []) or [])
+            rows.append({"role": role, "section": SECTION_TITLES[sk], "fields": n_fields})
+    return rows
+
+
+def gap_analysis(bundle: dict, target_floor: dict[str, int] | None = None) -> list[dict]:
+    """Compare each field-builder section's proposed-fields count vs a sensible floor.
+
+    Returns a list of {section, proposed, floor, gap, status} rows.
+    """
+    target_floor = target_floor or {
+        "partner_360": 6, "customer_360": 6,
+        "sales_opp_details": 6, "sales_contact_details": 4, "sales_deal_details": 6,
+    }
+    out = []
+    for sk in FIELD_BUILDER_SECTIONS:
+        proposed = len(_all_fields(bundle, sk))
+        floor = target_floor.get(sk, 0)
+        gap = max(0, floor - proposed)
+        if gap == 0 and proposed >= floor:
+            status = "OK"
+        elif gap == 0:
+            status = "Empty"
+        elif proposed == 0:
+            status = "Missing"
+        else:
+            status = "Under-spec"
+        out.append({"section": SECTION_TITLES[sk], "proposed": proposed, "floor": floor, "gap": gap, "status": status})
+    return out
+
+
+def daily_activity_series(audit_rows: list[dict]) -> list[dict]:
+    """Aggregate audit_log rows to per-day counts of session_start / autosave / report_downloaded."""
+    if not audit_rows:
+        return []
+    bucket: dict[str, dict[str, int]] = {}
+    for r in audit_rows:
+        ts = r.get("ts") or ""
+        day = ts[:10]  # YYYY-MM-DD
+        if not day: continue
+        b = bucket.setdefault(day, {"day": day, "sessions": 0, "autosaves": 0, "downloads": 0})
+        ev = r.get("event") or ""
+        if ev == "session_start":      b["sessions"]   += 1
+        elif ev == "autosave":          b["autosaves"]  += 1
+        elif ev == "report_downloaded": b["downloads"]  += 1
+    return sorted(bucket.values(), key=lambda x: x["day"])
+
+
+def time_to_completion(bundle: dict, audit_rows: list[dict] | None = None) -> list[dict]:
+    """Per-contributor minutes between first session_start audit row and last autosave.
+
+    Falls back to contributor.submitted_at when audit_log is empty.
+    """
+    # Index audit rows by contributor_id (or email + brand)
+    from datetime import datetime, timezone
+    def parse(ts):
+        if not ts: return None
+        try:
+            s = ts.replace("Z", "+00:00")
+            return datetime.fromisoformat(s)
+        except Exception:
+            return None
+
+    by_cid: dict[str, list[datetime]] = {}
+    if audit_rows:
+        for r in audit_rows:
+            cid = r.get("contributor_id")
+            if cid and r.get("brand") == bundle["brand"]:
+                t = parse(r.get("ts"))
+                if t: by_cid.setdefault(cid, []).append(t)
+
+    out = []
+    for c in bundle["contributors"]:
+        cid = c["id"]
+        times = sorted(by_cid.get(cid, []))
+        if times:
+            mins = round((times[-1] - times[0]).total_seconds() / 60.0, 1)
+        else:
+            mins = 0.0
+        out.append({
+            "name": c["name"], "role": c["role"], "email": c["email"],
+            "minutes": mins,
+        })
+    return out
+
+
+def cross_brand_health_score(bundles: list[dict]) -> list[dict]:
+    out = []
+    for b in bundles:
+        m = compute_metrics(b)
+        out.append({"brand": b["brand"], "health": overall_readiness_pct(m),
+                    "contributors": m["contributors"], "fields": m["total_fields"]})
+    return out
+
+
 def chart_readiness_radar_png(metrics: dict) -> bytes:
     scores = readiness_scores(metrics)
     labels = list(scores.keys()); vals = list(scores.values())
