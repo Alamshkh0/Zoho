@@ -5,6 +5,7 @@ Deploy: push to GitHub -> https://share.streamlit.io
 """
 import copy as _copy
 import json
+import time as _time
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -18,6 +19,29 @@ import analysis as A
 import audit
 import theme
 import excel_io
+
+
+# ---------- Cached read helpers (TTL-bounded so the UI stays snappy) ----------
+
+@st.cache_data(ttl=10, show_spinner=False)
+def _cached_brand_list(active_only: bool) -> list[dict]:
+    return db.list_brands(active_only=active_only)
+
+@st.cache_data(ttl=10, show_spinner=False)
+def _cached_contrib_counts() -> dict[str, int]:
+    return db.count_contributors_per_brand()
+
+@st.cache_data(ttl=15, show_spinner=False)
+def _cached_bundle(brand: str) -> dict:
+    return db.get_brand_bundle(brand)
+
+@st.cache_data(ttl=20, show_spinner=False)
+def _cached_audit(limit: int, event: str | None, brand: str | None, email: str | None) -> list[dict]:
+    f = {}
+    if event: f["event"] = event
+    if brand: f["brand"] = brand
+    if email: f["email"] = email
+    return audit.list_recent(limit=limit, filters=f or None)
 
 st.set_page_config(
     page_title="Redington Zoho CRM Discovery",
@@ -144,10 +168,10 @@ def render_intro():
         "Use the same email later to resume your session.",
     )
 
-    # Brand stat cards
+    # Brand stat cards (cached — TTL 10s)
     try:
-        counts = db.count_contributors_per_brand()
-        brands = db.list_brands()
+        counts = _cached_contrib_counts()
+        brands = _cached_brand_list(True)
     except Exception:
         counts = {}
         brands = [{"name": b, "logo_url": None} for b in config.BRANDS]
@@ -229,13 +253,15 @@ _FIELD_TYPES = getattr(config, "FIELD_TYPES",
     ["Text", "Number", "Date", "Dropdown", "Multi-select", "Yes/No"])
 
 FIELD_COLUMNS = {
-    "field":               st.column_config.TextColumn("Field name", required=True),
-    "type":                st.column_config.SelectboxColumn("Type", options=_FIELD_TYPES, required=True),
-    "options":             st.column_config.TextColumn("Options"),
-    "mandatory":           st.column_config.CheckboxColumn("Mand.?"),
-    "integration_needed":  st.column_config.CheckboxColumn("🔌 Integ.?"),
-    "data_capture_source": st.column_config.SelectboxColumn("📥 Source", options=_DATA_SOURCES),
-    "conditional_rule":    st.column_config.TextColumn("Conditional / business rule"),
+    "field":               st.column_config.TextColumn("Field name", required=True, width="medium"),
+    "type":                st.column_config.SelectboxColumn("Type", options=_FIELD_TYPES, required=True, width="small"),
+    "options":             st.column_config.TextColumn("Options", width="medium",
+                              help="Comma-separated values for Dropdown / Multi-select types"),
+    "mandatory":           st.column_config.CheckboxColumn("Mand.?", width="small"),
+    "integration_needed":  st.column_config.CheckboxColumn("🔌 Int?", width="small"),
+    "data_capture_source": st.column_config.SelectboxColumn("📥 Source", options=_DATA_SOURCES, width="small"),
+    "conditional_rule":    st.column_config.TextColumn("Business rule", width="large",
+                              help="e.g. 'Mandatory at Strong Upside', 'Required if Renewal'"),
 }
 
 
@@ -278,6 +304,8 @@ def _field_builder(label: str, state_key: str, suggestion_pool: list[dict], help
             st.session_state[init_key] = []
             st.session_state[state_key]["fields"] = []
             _reset_editor_state(edit_key)
+
+    st.caption("💡 Hover over the table and click the **⛶** icon (top-right) to enter fullscreen for easier data entry.")
 
     rows = st.session_state[init_key]
     df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=list(FIELD_COLUMNS.keys()))
@@ -538,10 +566,22 @@ def render_form():
     _autosave_form()
 
 
+_AUTOSAVE_DEBOUNCE_SEC = 1.5
+
 def _autosave_form():
     cid = st.session_state.get("contributor_id")
     if not cid:
         return
+
+    # Debounce: skip if we just saved less than _AUTOSAVE_DEBOUNCE_SEC ago.
+    # Without this every keystroke can fire a DB round-trip because Streamlit
+    # re-runs the entire script on each commit.
+    now = _time.time()
+    last = st.session_state.get("_autosave_last_run", 0.0)
+    if now - last < _AUTOSAVE_DEBOUNCE_SEC:
+        return
+    st.session_state["_autosave_last_run"] = now
+
     if st.session_state.get("_autosave_cid") != cid:
         st.session_state["_autosave_cid"] = cid
         for sk in SECTION_STATE_KEYS:
@@ -550,8 +590,8 @@ def _autosave_form():
     saved = []
     for sec_key, state_key in SECTION_STATE_KEYS.items():
         payload = st.session_state.get(state_key) or {}
-        last = st.session_state.get(f"_saved_{sec_key}")
-        if payload != last:
+        last_payload = st.session_state.get(f"_saved_{sec_key}")
+        if payload != last_payload:
             try:
                 db.save_response(cid, sec_key, payload)
                 st.session_state[f"_saved_{sec_key}"] = _copy.deepcopy(payload)
@@ -560,7 +600,13 @@ def _autosave_form():
                           fields_count=len((payload or {}).get("fields", []) or []))
             except Exception as e:
                 st.session_state["_autosave_last_error"] = str(e)
+
+    # Invalidate the brand bundle cache so admin views see fresh data
     if saved:
+        try:
+            _cached_bundle.clear()
+            _cached_contrib_counts.clear()
+        except Exception: pass
         try: st.toast(f"💾 Auto-saved {len(saved)} section(s)", icon="✅")
         except Exception: pass
 
@@ -603,10 +649,10 @@ def render_admin():
 
 
 def _admin_brand_dashboard():
-    brand_names = db.brand_names(active_only=False) or config.BRANDS
+    brand_names = [b["name"] for b in _cached_brand_list(False)] or config.BRANDS
     brand = st.selectbox("Brand", brand_names, key="brand_dash_select")
     try:
-        bundle = db.get_brand_bundle(brand)
+        bundle = _cached_bundle(brand)
     except Exception as e:
         st.error(f"DB error: {e}"); return
     metrics   = A.compute_metrics(bundle)
@@ -757,10 +803,10 @@ def _admin_brand_dashboard():
 def _admin_cross_brand():
     st.subheader("🔄 Cross-brand comparison")
     st.caption("Side-by-side view across every brand.")
-    brand_names = db.brand_names(active_only=False) or config.BRANDS
+    brand_names = [b["name"] for b in _cached_brand_list(False)] or config.BRANDS
     bundles = []
     for b in brand_names:
-        try: bundles.append(db.get_brand_bundle(b))
+        try: bundles.append(_cached_bundle(b))
         except Exception: pass
     rows = []
     for b in bundles:
@@ -816,14 +862,14 @@ def _admin_analytics():
     st.subheader("📈 Analytics")
     st.caption("Velocity, role contribution, gap analysis, and time-to-completion.")
 
-    brand_names = db.brand_names(active_only=False) or config.BRANDS
+    brand_names = [b["name"] for b in _cached_brand_list(False)] or config.BRANDS
     bundles = []
     for b in brand_names:
-        try: bundles.append(db.get_brand_bundle(b))
+        try: bundles.append(_cached_bundle(b))
         except Exception: pass
 
     try:
-        audit_rows = audit.list_recent(limit=2000)
+        audit_rows = _cached_audit(500, None, None, None)
     except Exception:
         audit_rows = []
 
@@ -932,7 +978,7 @@ def _admin_brands():
     st.caption("Add a new brand (name + optional logo + optional starter template). Archive to remove from the picker without deleting historical data.")
 
     try:
-        brands = db.list_brands(active_only=False)
+        brands = _cached_brand_list(False)
         # The fallback returns dicts with id=None — that means the brands table doesn't exist
         if brands and all(b.get("id") is None for b in brands):
             st.warning("📌 **Setup needed** — the `brands` table doesn't exist in Supabase yet. "
@@ -966,6 +1012,7 @@ def _admin_brands():
                 if target and target.get("id"):
                     db.archive_brand(target["id"])
                     audit.log("brand_archived", brand_name=archive_pick)
+                    _cached_brand_list.clear()
                     st.success(f"Archived {archive_pick}"); st.rerun()
         with cols[1]:
             unarchive_pick = st.selectbox("Unarchive brand", [b["name"] for b in brands if not b.get("active")] or ["(none archived)"], key="unarchive_pick")
@@ -974,6 +1021,7 @@ def _admin_brands():
                 if target and target.get("id"):
                     db.unarchive_brand(target["id"])
                     audit.log("brand_unarchived", brand_name=unarchive_pick)
+                    _cached_brand_list.clear()
                     st.success(f"Unarchived {unarchive_pick}"); st.rerun()
 
     st.markdown("---")
@@ -993,6 +1041,7 @@ def _admin_brands():
                                        starter_template=None,
                                        created_by=st.session_state.get("email"))
                     audit.log("brand_added", brand_name=name.strip(), has_logo=bool(logo.strip()))
+                    _cached_brand_list.clear()
                     st.success(f"✅ Added {row['name']}"); st.rerun()
                 except Exception as e:
                     msg = str(e)
@@ -1008,7 +1057,7 @@ def _admin_bulk_import():
     st.subheader("📥 Bulk Excel import / export")
     st.caption("Download a per-brand workbook, fill offline, upload back. The import is logged in the audit trail under the contributor email you enter on the Cover sheet.")
 
-    brand_names = db.brand_names(active_only=False) or config.BRANDS
+    brand_names = [b["name"] for b in _cached_brand_list(False)] or config.BRANDS
     brand = st.selectbox("Brand", brand_names, key="bulk_brand_select")
 
     st.markdown("##### 1) Download template")
@@ -1053,6 +1102,7 @@ def _admin_bulk_import():
                     db.save_response(row["id"], sk, payload)
                 audit.log("bulk_import", brand=brand, contributor_id=row["id"],
                           sections=list(sections.keys()), filename=uploaded.name)
+                _cached_bundle.clear(); _cached_contrib_counts.clear()
                 st.success(f"✅ Imported {len(sections)} section(s) under {row['email']}")
             except Exception as e:
                 st.error(f"Import failed: {e}")
@@ -1069,7 +1119,8 @@ def _admin_audit_log():
                                               "brand_archived", "brand_unarchived", "bulk_import",
                                               "cross_brand_export"])
     with f2:
-        brand_filter = st.selectbox("Brand", ["(all)"] + (db.brand_names(active_only=False) or config.BRANDS), key="audit_brand")
+        _br_options = ["(all)"] + ([b["name"] for b in _cached_brand_list(False)] or config.BRANDS)
+        brand_filter = st.selectbox("Brand", _br_options, key="audit_brand")
     with f3:
         email_filter = st.text_input("Email contains")
     with f4:
@@ -1080,7 +1131,8 @@ def _admin_audit_log():
     if brand_filter != "(all)": filters["brand"] = brand_filter
     if email_filter.strip():     filters["email"] = email_filter.strip()
 
-    rows = audit.list_recent(limit=int(limit), filters=filters)
+    rows = _cached_audit(int(limit),
+                         filters.get("event"), filters.get("brand"), filters.get("email"))
     if not rows:
         st.info("No audit events match.")
         return

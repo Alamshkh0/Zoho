@@ -65,10 +65,18 @@ def get_responses_for_contributor(contributor_id: str) -> dict[str, dict]:
 
 
 def get_brand_bundle(brand: str) -> dict:
+    """All contributors + their responses for one brand, in TWO queries (not N+1)."""
     contribs = list_contributors(brand)
-    resp_map: dict[str, dict] = {}
-    for c in contribs:
-        resp_map[c["id"]] = get_responses_for_contributor(c["id"])
+    resp_map: dict[str, dict[str, dict]] = {c["id"]: {} for c in contribs}
+    if contribs:
+        ids = [c["id"] for c in contribs]
+        try:
+            rows = client().table("responses").select("contributor_id,section_key,payload").in_("contributor_id", ids).execute().data or []
+        except Exception:
+            rows = []
+        for r in rows:
+            cid = r["contributor_id"]
+            resp_map.setdefault(cid, {})[r["section_key"]] = r["payload"]
     return {
         "brand": brand, "contributors": contribs,
         "responses_by_contributor": resp_map,
