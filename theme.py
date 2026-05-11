@@ -187,7 +187,7 @@ label, .stTextInput label, .stTextArea label, .stSelectbox label, .stMultiSelect
     background: rgba(0,229,255,.06) !important;
 }}
 
-/* ---------- Data tables / data_editor ---------- */
+/* ---------- Data tables / data_editor (glide-data-grid) ---------- */
 .stDataFrame, [data-testid="stDataFrameResizable"] {{
     border: 1px solid {COLORS["border"]} !important;
     border-radius: 12px;
@@ -195,11 +195,109 @@ label, .stTextInput label, .stTextArea label, .stSelectbox label, .stMultiSelect
 }}
 .stDataFrame table thead th {{ background: {COLORS["surface_2"]} !important; color: {COLORS["ink"]} !important; }}
 .stDataFrame table tbody tr td {{ background: {COLORS["surface"]} !important; color: {COLORS["ink"]} !important; }}
-[data-testid="stDataEditor"] {{
-    background: {COLORS["surface"]};
-    border: 1px solid {COLORS["border"]};
+
+/* glide-data-grid honors CSS custom properties — set the full palette so
+   typed text, headers, hovers and edit overlays all read correctly on dark */
+[data-testid="stDataEditor"],
+[data-testid="stDataEditorResizable"],
+[data-testid="stDataFrame"] {{
+    --gdg-bg-cell:                     {COLORS["surface"]};
+    --gdg-bg-cell-medium:              {COLORS["surface_2"]};
+    --gdg-bg-header:                   {COLORS["surface_2"]};
+    --gdg-bg-header-has-focus:         {COLORS["border"]};
+    --gdg-bg-header-hovered:           {COLORS["border"]};
+    --gdg-bg-bubble:                   {COLORS["surface_2"]};
+    --gdg-bg-bubble-selected:          rgba(0,229,255,.15);
+    --gdg-bg-search-result:            rgba(0,229,255,.25);
+    --gdg-text-dark:                   {COLORS["ink"]};
+    --gdg-text-medium:                 {COLORS["ink_dim"]};
+    --gdg-text-light:                  {COLORS["ink_dim"]};
+    --gdg-text-bubble:                 {COLORS["ink"]};
+    --gdg-text-header:                 {COLORS["ink"]};
+    --gdg-text-header-selected:        {COLORS["accent"]};
+    --gdg-text-group-header:           {COLORS["ink"]};
+    --gdg-border-color:                {COLORS["border"]};
+    --gdg-horizontal-border-color:     {COLORS["border"]};
+    --gdg-drilldown-border:            {COLORS["border"]};
+    --gdg-link-color:                  {COLORS["accent"]};
+    --gdg-cell-horizontal-padding:     8px;
+    --gdg-cell-vertical-padding:       3px;
+    --gdg-bg-icon-header:              {COLORS["ink_dim"]};
+    --gdg-fg-icon-header:              {COLORS["ink"]};
+    --gdg-header-bottom-border-color:  {COLORS["border"]};
+    --gdg-accent-color:                {COLORS["accent"]};
+    --gdg-accent-fg:                   {COLORS["bg"]};
+    --gdg-accent-light:                rgba(0,229,255,.15);
+    background:                        {COLORS["surface"]};
+    border: 1px solid                  {COLORS["border"]};
     border-radius: 12px;
 }}
+/* Inline edit overlay that pops up when you click into a cell */
+[data-testid="stDataEditor"] input,
+[data-testid="stDataEditor"] textarea,
+[data-testid="stDataEditor"] .gdg-edit-portal input,
+[data-testid="stDataEditor"] .gdg-edit-portal textarea,
+.gdg-portal input, .gdg-portal textarea,
+.gdg-growing-entry, .gdg-growing-entry textarea {{
+    background: {COLORS["surface"]} !important;
+    color: {COLORS["ink"]} !important;
+    caret-color: {COLORS["accent"]} !important;
+}}
+/* Dropdown overlay inside a data_editor cell (SelectboxColumn) */
+[data-testid="stDataEditor"] [role="listbox"] {{
+    background: {COLORS["surface"]} !important;
+    color: {COLORS["ink"]} !important;
+    border: 1px solid {COLORS["border"]} !important;
+}}
+
+/* ---------- Selectbox / multiselect dropdown popovers (BaseWeb) ----------
+   Streamlit dropdowns render via BaseWeb in a portal at the body root —
+   they don't inherit our container styles, so we target them globally. */
+div[data-baseweb="popover"],
+div[data-baseweb="menu"],
+ul[role="listbox"] {{
+    background: {COLORS["surface"]} !important;
+    color: {COLORS["ink"]} !important;
+    border: 1px solid {COLORS["border"]} !important;
+    box-shadow: 0 12px 24px rgba(0,0,0,.55) !important;
+}}
+div[data-baseweb="popover"] *,
+div[data-baseweb="menu"] *,
+ul[role="listbox"] li,
+[role="option"] {{
+    background: transparent !important;
+    color: {COLORS["ink"]} !important;
+}}
+ul[role="listbox"] li:hover,
+[role="option"]:hover,
+[role="option"][aria-selected="false"]:hover {{
+    background: {COLORS["surface_2"]} !important;
+    color: {COLORS["accent"]} !important;
+}}
+[role="option"][aria-selected="true"] {{
+    background: rgba(0,229,255,.10) !important;
+    color: {COLORS["accent"]} !important;
+}}
+/* Pills inside a multi-select */
+span[data-baseweb="tag"] {{
+    background: rgba(0,229,255,.10) !important;
+    color: {COLORS["accent"]} !important;
+    border: 1px solid rgba(0,229,255,.30) !important;
+}}
+span[data-baseweb="tag"] svg {{ fill: {COLORS["accent"]} !important; }}
+
+/* Display value inside the closed selectbox */
+[data-baseweb="select"] > div > div {{
+    color: {COLORS["ink"]} !important;
+}}
+[data-baseweb="select"] svg {{ fill: {COLORS["ink_dim"]} !important; }}
+
+/* Date picker calendar pop-up */
+div[data-baseweb="calendar"] {{
+    background: {COLORS["surface"]} !important;
+    color: {COLORS["ink"]} !important;
+}}
+div[data-baseweb="calendar"] * {{ color: {COLORS["ink"]} !important; }}
 
 /* ---------- Sidebar ---------- */
 section[data-testid="stSidebar"] {{
@@ -249,6 +347,154 @@ div[data-baseweb="notification"] {{
 .stProgress > div > div > div > div {{
     background: linear-gradient(90deg, {COLORS["accent"]}, {COLORS["accent_2"]}) !important;
 }}
+
+/* ---------- COMPREHENSIVE CONTRAST PASS ---------- */
+/* Force ink color on every text-bearing surface Streamlit might render */
+.stApp, .stApp p, .stApp span:not(.pill):not([class*="pill-"]),
+.stApp label, .stApp li, .stApp small,
+.stMarkdown, .stMarkdown *, .stText,
+.stCaption, .stCaption span, .stCaption p,
+[data-testid="stMarkdownContainer"], [data-testid="stMarkdownContainer"] * {{
+    color: {COLORS["ink"]};
+}}
+.stCaption, .stCaption *, [data-testid="stCaptionContainer"] {{ color: {COLORS["ink_dim"]} !important; }}
+
+/* All form inputs — typed text must be readable */
+.stApp input, .stApp textarea, .stApp select,
+input[type="text"], input[type="email"], input[type="number"],
+input[type="password"], input[type="search"], input[type="tel"],
+input[type="url"], input[type="date"] {{
+    background: {COLORS["surface"]} !important;
+    color: {COLORS["ink"]} !important;
+    -webkit-text-fill-color: {COLORS["ink"]} !important;
+    caret-color: {COLORS["accent"]} !important;
+    border-color: {COLORS["border"]} !important;
+}}
+.stApp input::placeholder, .stApp textarea::placeholder {{
+    color: {COLORS["ink_dim"]} !important;
+    -webkit-text-fill-color: {COLORS["ink_dim"]} !important;
+    opacity: 1;
+}}
+
+/* Number input +/- buttons */
+[data-testid="stNumberInput"] button {{
+    background: {COLORS["surface_2"]} !important;
+    color: {COLORS["ink"]} !important;
+    border-color: {COLORS["border"]} !important;
+}}
+[data-testid="stNumberInput"] button:hover {{ color: {COLORS["accent"]} !important; }}
+
+/* Alerts — make sure every nested element is readable */
+.stAlert, .stAlert *, .stAlert p, .stAlert span, .stAlert div,
+[data-testid="stAlert"], [data-testid="stAlert"] *,
+[data-baseweb="notification"], [data-baseweb="notification"] * {{
+    color: {COLORS["ink"]} !important;
+}}
+.stAlert {{ background: rgba(31,37,48,.85) !important; border: 1px solid {COLORS["border"]} !important; }}
+[data-testid="stAlert"][data-baseweb="notification"][kind="info"]    {{ border-left: 3px solid {COLORS["accent"]}    !important; }}
+[data-testid="stAlert"][data-baseweb="notification"][kind="success"] {{ border-left: 3px solid {COLORS["ok"]}        !important; }}
+[data-testid="stAlert"][data-baseweb="notification"][kind="warning"] {{ border-left: 3px solid {COLORS["warn"]}      !important; }}
+[data-testid="stAlert"][data-baseweb="notification"][kind="error"]   {{ border-left: 3px solid {COLORS["danger"]}    !important; }}
+
+/* Expanders */
+[data-testid="stExpander"] {{
+    background: {COLORS["surface"]} !important;
+    border: 1px solid {COLORS["border"]} !important;
+    border-radius: 12px;
+}}
+[data-testid="stExpander"] summary, [data-testid="stExpander"] details > summary,
+[data-testid="stExpander"] summary *, [data-testid="stExpander"] svg {{
+    color: {COLORS["ink"]} !important;
+    fill: {COLORS["ink"]} !important;
+}}
+[data-testid="stExpander"] summary:hover {{ color: {COLORS["accent"]} !important; }}
+
+/* Radio / checkbox labels */
+[data-testid="stRadio"] label, [data-testid="stRadio"] label *,
+[data-testid="stCheckbox"] label, [data-testid="stCheckbox"] label * {{
+    color: {COLORS["ink"]} !important;
+}}
+
+/* File uploader */
+[data-testid="stFileUploader"] {{
+    background: {COLORS["surface"]} !important;
+    border: 1px dashed {COLORS["border"]} !important;
+    border-radius: 12px;
+}}
+[data-testid="stFileUploader"] section, [data-testid="stFileUploader"] section * {{
+    color: {COLORS["ink"]} !important;
+    background: transparent !important;
+}}
+[data-testid="stFileUploaderDropzone"] {{ background: transparent !important; }}
+[data-testid="stFileUploader"] small {{ color: {COLORS["ink_dim"]} !important; }}
+
+/* Tooltips */
+[role="tooltip"], div[data-baseweb="tooltip"] {{
+    background: {COLORS["surface_2"]} !important;
+    color: {COLORS["ink"]} !important;
+    border: 1px solid {COLORS["border"]} !important;
+    box-shadow: 0 8px 20px rgba(0,0,0,.5);
+}}
+[role="tooltip"] *, div[data-baseweb="tooltip"] * {{ color: {COLORS["ink"]} !important; }}
+
+/* Help icons (?) on widget labels */
+[data-testid="stTooltipIcon"] svg, [data-testid="stHelpIcon"] svg {{ fill: {COLORS["ink_dim"]} !important; }}
+
+/* st.dataframe (read-only) — force every nested cell readable */
+[data-testid="stTable"] table, [data-testid="stTable"] table * {{
+    background: {COLORS["surface"]} !important;
+    color: {COLORS["ink"]} !important;
+}}
+[data-testid="stTable"] thead th {{ background: {COLORS["surface_2"]} !important; }}
+
+/* Code blocks */
+.stCode, .stCode *, code, pre {{
+    background: {COLORS["surface_2"]} !important;
+    color: {COLORS["ink"]} !important;
+}}
+[data-testid="stCode"], [data-testid="stCodeBlock"] {{
+    background: {COLORS["surface_2"]} !important;
+    border: 1px solid {COLORS["border"]} !important;
+    border-radius: 10px;
+}}
+
+/* Json view */
+[data-testid="stJson"] {{
+    background: {COLORS["surface_2"]} !important;
+    color: {COLORS["ink"]} !important;
+    border: 1px solid {COLORS["border"]} !important;
+    border-radius: 10px;
+}}
+[data-testid="stJson"] * {{ color: {COLORS["ink"]} !important; }}
+
+/* Toast pop-up */
+[data-testid="stToast"], [data-testid="stToast"] * {{
+    background: {COLORS["surface_2"]} !important;
+    color: {COLORS["ink"]} !important;
+    border: 1px solid {COLORS["border"]} !important;
+}}
+
+/* Sidebar dropdowns / radios — they share the same components */
+section[data-testid="stSidebar"] [role="option"],
+section[data-testid="stSidebar"] [role="listbox"],
+section[data-testid="stSidebar"] [data-baseweb="select"] * {{
+    color: {COLORS["ink"]} !important;
+}}
+
+/* The little (?) help text shown beneath some widgets */
+[data-testid="stWidgetLabel"], [data-testid="stWidgetLabel"] * {{
+    color: {COLORS["ink_dim"]} !important;
+}}
+
+/* st.progress label */
+.stProgress [data-testid="stProgressLabel"], .stProgress p {{ color: {COLORS["ink_dim"]} !important; }}
+
+/* st.metric the value should stay accent; label dim — already set, reinforce */
+[data-testid="stMetric"] * {{ color: inherit; }}
+
+/* Plotly modebar buttons */
+.modebar-btn path {{ fill: {COLORS["ink_dim"]} !important; }}
+.modebar-group {{ background: transparent !important; }}
 
 /* ---------- Mobile breakpoint ---------- */
 @media (max-width: 768px) {{
