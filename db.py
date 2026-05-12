@@ -69,6 +69,19 @@ def upsert_contributor(brand: str, name: str, email: str, role: str) -> dict:
     return res.data[0]
 
 
+def mark_submitted(contributor_id: str) -> None:
+    """Lock the contributor and set the final submission timestamp."""
+    client().table("contributors").update({
+        "is_locked": True,
+        "final_submitted_at": datetime.utcnow().isoformat(timespec="seconds") + "+00:00",
+    }).eq("id", contributor_id).execute()
+
+
+def unlock_contributor(contributor_id: str) -> None:
+    """Admin escape hatch: lift the lock so the contributor can edit again."""
+    client().table("contributors").update({"is_locked": False}).eq("id", contributor_id).execute()
+
+
 def save_response(contributor_id: str, section_key: str, payload: dict[str, Any]) -> None:
     payload = _clean_for_json(payload) or {}
     existing = client().table("responses").select("id").eq("contributor_id", contributor_id).eq("section_key", section_key).execute()

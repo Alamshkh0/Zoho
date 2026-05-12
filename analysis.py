@@ -483,6 +483,17 @@ def cross_brand_health_score(bundles: list[dict]) -> list[dict]:
     return out
 
 
+def submission_rate(bundle: dict) -> dict:
+    """How many of the brand's contributors have hit final submit?"""
+    total = len(bundle.get("contributors") or [])
+    locked = sum(1 for c in (bundle.get("contributors") or []) if c.get("is_locked"))
+    return {
+        "total":  total,
+        "locked": locked,
+        "pct":    round(100 * locked / total, 1) if total else 0.0,
+    }
+
+
 def chart_readiness_radar_png(metrics: dict) -> bytes:
     scores = readiness_scores(metrics)
     labels = list(scores.keys()); vals = list(scores.values())

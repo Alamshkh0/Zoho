@@ -95,6 +95,8 @@ def _init_state():
         "name": "",
         "email": "",
         "role": "PAM",
+        "is_locked": False,
+        "final_submitted_at": None,
         "admin_unlocked": False,
         "sec_people": {},
         "sec_partner_360": {"fields": []},
@@ -224,7 +226,15 @@ def render_intro():
         try:
             existing = db.find_contributor_by_email(brand, email)
             if existing:
-                st.info(f"🔁 Found prior submission for **{email}** on **{brand}** (last update {existing['submitted_at'][:19].replace('T',' ')}). Click Start to resume — your earlier answers will reload.")
+                if existing.get("is_locked"):
+                    final_ts = (existing.get("final_submitted_at") or "")[:19].replace("T", " ")
+                    st.warning(
+                        f"🔒 Your submission for **{email}** on **{brand}** is **LOCKED** "
+                        f"(finalised {final_ts}). You can open it in read-only mode by clicking Start, "
+                        f"but to edit you'll need an admin to unlock you (Admin → Brand Dashboard → Unlock)."
+                    )
+                else:
+                    st.info(f"🔁 Found prior submission for **{email}** on **{brand}** (last update {existing['submitted_at'][:19].replace('T',' ')}). Click Start to resume — your earlier answers will reload.")
         except Exception:
             pass
 
@@ -243,8 +253,10 @@ def render_intro():
         st.session_state.name = name.strip()
         st.session_state.email = email.strip()
         st.session_state.role = role
+        st.session_state.is_locked = bool(row.get("is_locked"))
+        st.session_state.final_submitted_at = row.get("final_submitted_at")
         _load_responses_into_state(row["id"])
-        audit.log("session_start", actor_email=email.strip(), brand=brand, contributor_id=row["id"], role=role, returning=returning)
+        audit.log("session_start", actor_email=email.strip(), brand=brand, contributor_id=row["id"], role=role, returning=returning, locked=st.session_state.is_locked)
         st.success("✅ Session ready — open **Discovery Form** in the sidebar.")
         st.balloons()
 
@@ -472,9 +484,100 @@ def _fs_dashboards():
     st.session_state.sec_dashboards["dashboards"] = _df_records(edited)
 
 
+def _render_thank_you():
+    """Locked / submitted view. Replaces the form once final submit is hit."""
+    final_ts = (st.session_state.get("final_submitted_at") or "")[:19].replace("T", " ")
+    _hero(
+        "FINAL SUBMISSION RECEIVED",
+        f"🎉 Thank you, {st.session_state.name.split()[0] if st.session_state.name else 'team'}!",
+        f"Your contribution to the <b>{st.session_state.brand}</b> Zoho CRM discovery "
+        f"is finalised{f' on <b>{final_ts}</b>' if final_ts else ''}. It's been merged with other contributors' "
+        f"inputs and is ready for the implementation team. The form is now locked — "
+        f"contact your admin if you need to make changes.",
+    )
+
+    # Summary KPIs from session state (still loaded after submit)
+    try:
+        bundle = _cached_bundle(st.session_state.brand)
+        metrics = A.compute_metrics(bundle)
+    except Exception:
+        bundle, metrics = None, None
+
+    if metrics:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("👥 Contributors", metrics["contributors"])
+        c2.metric("🧱 Fields",        metrics["total_fields"])
+        c3.metric("🔌 Integrations",  f"{metrics['integration_pct']}%")
+        c4.metric("📈 Readiness",     f"{A.overall_readiness_pct(metrics):.0f}/100")
+        st.progress(metrics["completion_pct"] / 100,
+                    text=f"Brand-level section completion: {metrics['completion_pct']}%")
+
+    st.markdown("### 📥 Download the brand requirements pack")
+    st.caption("Same files the admin downloads — share with the Zoho implementation team.")
+    if bundle:
+        d1, d2, d3 = st.columns(3)
+        with d1:
+            if st.download_button("⬇️ PDF",  data=reports.build_pdf(bundle),
+                                  file_name=f"Redington_Discovery_{st.session_state.brand}.pdf",
+                                  mime="application/pdf", use_container_width=True):
+                audit.log("report_downloaded", brand=st.session_state.brand, format="pdf", actor="contributor")
+        with d2:
+            if st.download_button("⬇️ Word", data=reports.build_docx(bundle),
+                                  file_name=f"Redington_Discovery_{st.session_state.brand}.docx",
+                                  mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                  use_container_width=True):
+                audit.log("report_downloaded", brand=st.session_state.brand, format="docx", actor="contributor")
+        with d3:
+            if st.download_button("⬇️ CSV",  data=reports.build_csv(bundle),
+                                  file_name=f"Redington_Discovery_{st.session_state.brand}.csv",
+                                  mime="text/csv", use_container_width=True):
+                audit.log("report_downloaded", brand=st.session_state.brand, format="csv", actor="contributor")
+
+    st.markdown("---")
+    st.markdown("### 🔍 Your inputs (read-only)")
+    st.caption("Preview of what you submitted. Pulled live from the merged brand record.")
+    if bundle:
+        my_resp = bundle["responses_by_contributor"].get(st.session_state.contributor_id, {})
+        for sec_key, sec_title in reports.SECTIONS:
+            payload = my_resp.get(sec_key)
+            if not payload: continue
+            with st.expander(sec_title, expanded=False):
+                if sec_key in reports.FIELD_BUILDER_SECTIONS:
+                    rows = payload.get("fields", []) or []
+                    if rows: st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                    if payload.get("notes"): st.caption(f"Notes: {payload['notes']}")
+                elif sec_key == "approvals":
+                    rows = payload.get("stages", []) or []
+                    if rows: st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                    if payload.get("escalation"): st.caption(f"Escalation: {payload['escalation']}")
+                    if payload.get("notes"): st.caption(f"Notes: {payload['notes']}")
+                elif sec_key == "dashboards":
+                    rows = payload.get("dashboards", []) or []
+                    if rows: st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                    if payload.get("notes"): st.caption(f"Notes: {payload['notes']}")
+                else:
+                    for k, v in payload.items():
+                        if v: st.markdown(f"- **{k.replace('_',' ').title()}:** {v}")
+
+    st.markdown("---")
+    c1, c2 = st.columns([2, 3])
+    with c1:
+        if st.button("← Start another brand", use_container_width=True):
+            for k in ("contributor_id", "brand", "is_locked", "final_submitted_at"):
+                st.session_state[k] = None if k != "is_locked" else False
+            st.rerun()
+    with c2:
+        st.info("🛡️ Need to edit? Ask an admin to unlock you: Admin → Brand Dashboard → Contributors → Unlock.")
+
+
 def render_form():
     if not st.session_state.contributor_id:
         st.warning("Please start a session first (sidebar → 🏁 Start)."); return
+
+    # Locked / finalised? show the thank-you screen instead of the form
+    if st.session_state.get("is_locked"):
+        _render_thank_you()
+        return
 
     # Fullscreen short-circuit: a section was promoted to full-page mode
     fs_section = st.session_state.get("_fullscreen_section")
@@ -708,9 +811,13 @@ def render_form():
             s["questions_for_zoho"] = st.text_area("Questions for the Zoho team", value=s.get("questions_for_zoho", ""), height=130)
 
     st.divider()
-    save, info = st.columns([1, 4])
-    with save:
-        if st.button("💾 Save & Submit", type="primary", use_container_width=True):
+    st.markdown("### Submit your contribution")
+    st.caption("**Save progress** keeps your draft editable (autosave is also running in the background). "
+               "**Final submit** locks your contribution, generates the reports, and shows you the brand-level pack — "
+               "use this when you're done.")
+    cs, cf, info = st.columns([1, 1, 3])
+    with cs:
+        if st.button("💾 Save progress", use_container_width=True):
             try:
                 filled = []
                 for sec_key, state_key in SECTION_STATE_KEYS.items():
@@ -718,11 +825,30 @@ def render_form():
                     db.save_response(st.session_state.contributor_id, sec_key, payload)
                     if A._section_filled(payload, sec_key): filled.append(sec_key)
                 audit.log("submit", contributor_id=st.session_state.contributor_id, sections_filled=len(filled))
-                st.success("✅ Saved. Use the same email to come back anytime.")
+                st.success("✅ Saved. Use the same email to resume anytime.")
             except Exception as e:
                 st.error(f"Save failed: {e}")
+    with cf:
+        if st.button("🚀 Final submit & lock", type="primary", use_container_width=True):
+            try:
+                # Persist any pending in-memory changes first
+                for sec_key, state_key in SECTION_STATE_KEYS.items():
+                    db.save_response(st.session_state.contributor_id, sec_key, st.session_state.get(state_key) or {})
+                db.mark_submitted(st.session_state.contributor_id)
+                filled = sum(1 for sk, sv in SECTION_STATE_KEYS.items()
+                             if A._section_filled(st.session_state.get(sv) or {}, sk))
+                audit.log("final_submit", contributor_id=st.session_state.contributor_id,
+                          sections_filled=filled, brand=st.session_state.brand)
+                _cached_bundle.clear(); _cached_contrib_counts.clear()
+                st.session_state["is_locked"] = True
+                st.session_state["final_submitted_at"] = pd.Timestamp.utcnow().isoformat()
+                st.success("🎉 Submitted! Redirecting…")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Final submit failed: {e}")
     with info:
-        st.info("💡 Auto-save runs on every change. Use the **same email** later to resume. Multiple roles per brand contribute — answers merge into one report.")
+        st.info("💡 Tip: invite teammates with different roles to add their perspective using the same brand "
+                "(different email). Their inputs merge into the brand pack you'll see on the thank-you screen.")
 
     _autosave_form()
 
@@ -823,13 +949,16 @@ def _admin_brand_dashboard():
     st.subheader(f"🏷️ {brand}")
     st.caption(f"Generated {bundle['generated_at']}")
 
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    sub = A.submission_rate(bundle)
+    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
     c1.metric("👥 Contributors", metrics["contributors"])
-    c2.metric("🧱 Fields",         metrics["total_fields"])
-    c3.metric("✅ Mandatory",      f"{metrics['mandatory_pct']}%")
-    c4.metric("🔌 Integration",    f"{metrics['integration_pct']}%")
-    c5.metric("🔁 Approvals",      metrics["approval_stages"])
-    c6.metric("📊 Dashboards",     metrics["dashboards"])
+    c2.metric("🚀 Submitted",    f"{sub['locked']}/{sub['total']}",
+              delta=f"{sub['pct']}% locked" if sub['total'] else None)
+    c3.metric("🧱 Fields",         metrics["total_fields"])
+    c4.metric("✅ Mandatory",      f"{metrics['mandatory_pct']}%")
+    c5.metric("🔌 Integration",    f"{metrics['integration_pct']}%")
+    c6.metric("🔁 Approvals",      metrics["approval_stages"])
+    c7.metric("📊 Dashboards",     metrics["dashboards"])
 
     st.progress(metrics["completion_pct"] / 100,
                 text=f"Section completion: {metrics['completion_pct']}%   ·   Brand readiness: {A.overall_readiness_pct(metrics):.0f}/100")
@@ -909,9 +1038,28 @@ def _admin_brand_dashboard():
     st.markdown("### 👥 Contributors")
     cdf = pd.DataFrame([{
         "Name": c["name"], "Role": c["role"], "Email": c["email"],
-        "Last update": c["submitted_at"][:19].replace("T"," "),
+        "Status": "🔒 Locked" if c.get("is_locked") else "✏️ In progress",
+        "Final submit": (c.get("final_submitted_at") or "")[:19].replace("T", " ") or "—",
+        "Last update": c["submitted_at"][:19].replace("T", " "),
     } for c in bundle["contributors"]])
     st.dataframe(cdf, use_container_width=True, hide_index=True)
+
+    # Submission lock controls
+    locked_contribs = [c for c in bundle["contributors"] if c.get("is_locked")]
+    if locked_contribs:
+        with st.expander(f"🔓 Unlock a locked contributor ({len(locked_contribs)})"):
+            pick = st.selectbox("Pick someone to unlock",
+                                [f"{c['name']} <{c['email']}>" for c in locked_contribs],
+                                key=f"unlock_pick_{brand}")
+            if st.button("Unlock so they can edit again", key=f"unlock_btn_{brand}"):
+                target = locked_contribs[[f"{c['name']} <{c['email']}>" for c in locked_contribs].index(pick)]
+                try:
+                    db.unlock_contributor(target["id"])
+                    audit.log("contributor_unlocked", brand=brand, contributor_id=target["id"], target_email=target["email"])
+                    _cached_bundle.clear()
+                    st.success(f"Unlocked {target['name']}"); st.rerun()
+                except Exception as e:
+                    st.error(f"Unlock failed: {e}")
 
     # Downloads
     st.markdown("### 📥 Download requirements pack")
@@ -971,8 +1119,10 @@ def _admin_cross_brand():
         except Exception: pass
     rows = []
     for b in bundles:
-        m = A.compute_metrics(b)
-        rows.append({"Brand": b["brand"], "Contributors": m["contributors"], "Fields": m["total_fields"],
+        m = A.compute_metrics(b); sub = A.submission_rate(b)
+        rows.append({"Brand": b["brand"], "Contributors": m["contributors"],
+                     "Submitted": f"{sub['locked']}/{sub['total']} ({sub['pct']}%)",
+                     "Fields": m["total_fields"],
                      "Mandatory %": m["mandatory_pct"], "Integration %": m["integration_pct"],
                      "Approvals": m["approval_stages"], "Dashboards": m["dashboards"],
                      "Completion %": m["completion_pct"], "Readiness /100": A.overall_readiness_pct(m)})
