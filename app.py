@@ -11,6 +11,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+
 import config
 import db
 import reports
@@ -19,6 +20,18 @@ import analysis as A
 import audit
 import theme
 import excel_io
+
+
+def _df_records(df: pd.DataFrame) -> list[dict]:
+    """DataFrame -> list of dicts, with NaN/NaT -> None (JSON-safe).
+
+    Pandas' DataFrame.where(notna(), None) doesn't actually replace NaN
+    in float dtypes because None can't live in a numpy float column.
+    Sanitize at the dict level via db._clean_for_json (recursive).
+    """
+    if df is None or df.empty:
+        return []
+    return db._clean_for_json(df.to_dict(orient="records"))
 
 
 # ---------- Cached read helpers (TTL-bounded so the UI stays snappy) ----------
@@ -316,7 +329,7 @@ def _field_builder(label: str, state_key: str, suggestion_pool: list[dict],
         df, num_rows="dynamic", use_container_width=True,
         column_config=FIELD_COLUMNS, key=edit_key, hide_index=True, height=height,
     )
-    fields = edited.to_dict(orient="records")
+    fields = _df_records(edited)
     st.session_state[state_key]["fields"] = fields
     return fields
 
@@ -419,7 +432,7 @@ def _fs_approvals():
             "can_revert": st.column_config.CheckboxColumn("Revert?", width="small"),
         },
     )
-    st.session_state.sec_approvals["stages"] = edited.to_dict(orient="records")
+    st.session_state.sec_approvals["stages"] = _df_records(edited)
 
 
 def _fs_dashboards():
@@ -456,7 +469,7 @@ def _fs_dashboards():
             "frequency": st.column_config.SelectboxColumn("Frequency", options=["Real-time","Daily","Weekly","Monthly","Quarterly","On-demand"], width="small"),
         },
     )
-    st.session_state.sec_dashboards["dashboards"] = edited.to_dict(orient="records")
+    st.session_state.sec_dashboards["dashboards"] = _df_records(edited)
 
 
 def render_form():
@@ -623,7 +636,7 @@ def render_form():
                 "can_revert": st.column_config.CheckboxColumn("Revert?"),
             },
         )
-        st.session_state.sec_approvals["stages"]     = edited.to_dict(orient="records")
+        st.session_state.sec_approvals["stages"]     = _df_records(edited)
         st.session_state.sec_approvals["escalation"] = st.text_area("Escalation rules (what if SLA breached?)", value=st.session_state.sec_approvals.get("escalation", ""), height=80)
         st.session_state.sec_approvals["notes"]      = st.text_area("Other workflow notes", value=st.session_state.sec_approvals.get("notes", ""), height=80)
 
@@ -667,7 +680,7 @@ def render_form():
                 "frequency": st.column_config.SelectboxColumn("Frequency", options=["Real-time","Daily","Weekly","Monthly","Quarterly","On-demand"]),
             },
         )
-        st.session_state.sec_dashboards["dashboards"] = edited.to_dict(orient="records")
+        st.session_state.sec_dashboards["dashboards"] = _df_records(edited)
         st.session_state.sec_dashboards["notes"]      = st.text_area("Notes (exports, drill-downs, scheduled emails)", value=st.session_state.sec_dashboards.get("notes", ""), height=80)
 
     # G. Best Practices

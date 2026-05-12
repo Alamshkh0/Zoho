@@ -2,11 +2,38 @@
 
 Tables: contributors, responses, brands, audit_log (see schema.sql + schema_v3.sql).
 """
+import math
 import re
 from datetime import datetime
 from typing import Any, Optional
 from supabase import create_client, Client
 import config
+
+
+def _clean_for_json(obj: Any) -> Any:
+    """Replace NaN / pandas NA / numpy NaN with None so the payload is JSON-safe.
+    Supabase rejects payloads with NaN (the standard says NaN is not valid JSON).
+    """
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return {k: _clean_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_clean_for_json(v) for v in obj]
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, str):
+        return obj
+    # pandas NA / numpy NaN, etc.
+    try:
+        import pandas as pd
+        if pd.isna(obj):
+            return None
+    except Exception:
+        pass
+    return obj
 
 _client: Client | None = None
 
@@ -43,6 +70,7 @@ def upsert_contributor(brand: str, name: str, email: str, role: str) -> dict:
 
 
 def save_response(contributor_id: str, section_key: str, payload: dict[str, Any]) -> None:
+    payload = _clean_for_json(payload) or {}
     existing = client().table("responses").select("id").eq("contributor_id", contributor_id).eq("section_key", section_key).execute()
     if existing.data:
         client().table("responses").update({"payload": payload}).eq("id", existing.data[0]["id"]).execute()
